@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vulntriage"
+version = "0.1.0"
+description = "Rank pip-audit CVEs by real exploitability using Claude AI"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Nivish" }]
+requires-python = ">=3.11"
+keywords = ["security", "cve", "pip-audit", "ai", "vulnerability"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+]
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "anthropic>=0.26.0",
+]
+
+[project.scripts]
+vulntriage = "vulntriage.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "black>=24.0.0",
+    "ruff>=0.4.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vulntriage"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=vulntriage --cov-report=term-missing --cov-fail-under=80"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+select = ["E", "F", "I", "N", "W", "UP"]

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.Python
+pip-wheel-metadata/
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Environment
+.env
+*.env
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Internal / project-management artifacts — do not ship
+CLAUDE.md
+project.md
+docs/plan.md
+docs/superpowers/
