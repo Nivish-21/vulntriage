@@ -32,5 +32,4 @@ htmlcov/
 # Internal / project-management artifacts — do not ship
 CLAUDE.md
 project.md
-docs/plan.md
-docs/superpowers/
+docs/

@@ -1,11 +1,17 @@
 import json
+import os
 import re
 from typing import Any
 
 import anthropic
 
 from vulntriage.exceptions import AuthError, ParseError
-from vulntriage.models import CVE, RankedCVE
+from vulntriage.models import CVE, LLMProvider, RankedCVE
+
+try:
+    import openai as _openai_module
+except ImportError:
+    _openai_module = None  # type: ignore[assignment]
 
 VALID_RISK_LEVELS = frozenset({"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"})
 
@@ -31,6 +37,84 @@ SYSTEM_PROMPT = (
     "- reasoning must be one sentence (<=20 words).\n"
     "Return ONLY a valid JSON array. No markdown fences, no prose."
 )
+
+
+class AnthropicProvider:
+    def __init__(self) -> None:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise AuthError(
+                "ANTHROPIC_API_KEY is not set. Get a key from https://console.anthropic.com"
+            )
+        self._client = anthropic.Anthropic(api_key=api_key, timeout=60.0, max_retries=3)
+
+    def complete(self, system: str, user: str) -> str:
+        try:
+            message = self._client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=MAX_TOKENS,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system,
+                        # Cache the static system instructions across repeat scans.
+                        # Cached tokens cost 10% of normal input price (5-min TTL).
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[{"role": "user", "content": user}],
+            )
+        except anthropic.AuthenticationError as exc:
+            raise AuthError("Invalid or expired Anthropic API key.") from exc
+        if not message.content or not hasattr(message.content[0], "text"):
+            raise ParseError("Claude returned an empty or non-text response.")
+        return message.content[0].text
+
+
+OPENAI_MODEL = "gpt-4o-mini"
+
+
+class OpenAIProvider:
+    def __init__(self) -> None:
+        if _openai_module is None:
+            raise ImportError(
+                "openai package is not installed. Run: pip install 'vulntriage[openai]'"
+            )
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise AuthError(
+                "OPENAI_API_KEY is not set. Get a key from https://platform.openai.com/api-keys"
+            )
+        self._client = _openai_module.OpenAI(
+            api_key=api_key, timeout=60.0, max_retries=3
+        )
+
+    def complete(self, system: str, user: str) -> str:
+        try:
+            response = self._client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+        except _openai_module.AuthenticationError as exc:
+            raise AuthError("Invalid or expired OpenAI API key.") from exc
+        if not response.choices or response.choices[0].message.content is None:
+            raise ParseError("OpenAI returned an empty response.")
+        return response.choices[0].message.content
+
+
+_PROVIDERS: dict[str, type] = {"anthropic": AnthropicProvider, "openai": OpenAIProvider}
+
+
+def get_provider(name: str | None = None) -> LLMProvider:
+    provider_name = (name or os.environ.get("VULNTRIAGE_PROVIDER", "anthropic")).lower()
+    cls = _PROVIDERS.get(provider_name)
+    if cls is None:
+        valid = ", ".join(sorted(_PROVIDERS))
+        raise ValueError(f"Unknown provider: {provider_name!r}. Valid options: {valid}")
+    return cls()
 
 
 def _cve_to_dict(cve: CVE) -> dict[str, Any]:
@@ -98,25 +182,12 @@ def parse_claude_response(response_text: str, cves: list[CVE]) -> list[RankedCVE
     return ranked
 
 
-def rank_cves(cves: list[CVE], stack_context: str, api_key: str) -> list[RankedCVE]:
-    client = anthropic.Anthropic(api_key=api_key, timeout=60.0, max_retries=3)
-    try:
-        message = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=MAX_TOKENS,
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    # Cache the static system instructions across repeat scans.
-                    # Cached tokens cost 10% of normal input price (5-min TTL).
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": build_prompt(cves, stack_context)}],
-        )
-    except anthropic.AuthenticationError as exc:
-        raise AuthError("Invalid or expired Anthropic API key.") from exc
-    if not message.content or not hasattr(message.content[0], "text"):
-        raise ParseError("Claude returned an empty or non-text response.")
-    return parse_claude_response(message.content[0].text, cves)
+def rank_cves(
+    cves: list[CVE],
+    stack_context: str,
+    provider: LLMProvider | None = None,
+) -> list[RankedCVE]:
+    if provider is None:
+        provider = get_provider()
+    response_text = provider.complete(SYSTEM_PROMPT, build_prompt(cves, stack_context))
+    return parse_claude_response(response_text, cves)

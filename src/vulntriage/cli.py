@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import typer
@@ -7,7 +6,7 @@ from vulntriage.audit import run_audit
 from vulntriage.context import read_stack_context
 from vulntriage.exceptions import AuditError, AuthError, ContextError, ParseError
 from vulntriage.output import determine_exit_code, render_table
-from vulntriage.ranker import rank_cves
+from vulntriage.ranker import get_provider, rank_cves
 
 app = typer.Typer(help="Rank pip-audit CVEs by real exploitability using Claude AI.")
 
@@ -30,13 +29,10 @@ def scan(
     ),
 ) -> None:
     """Run pip-audit and rank CVEs by real risk using Claude."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        typer.echo(
-            "Error: ANTHROPIC_API_KEY environment variable is not set.\n"
-            "Get a key from https://console.anthropic.com",
-            err=True,
-        )
+    try:
+        provider = get_provider()
+    except (AuthError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
     try:
@@ -56,7 +52,7 @@ def scan(
         stack_context = ""
 
     try:
-        ranked = rank_cves(cves, stack_context, api_key)
+        ranked = rank_cves(cves, stack_context, provider=provider)
     except AuthError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)

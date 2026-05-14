@@ -1,7 +1,11 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 RiskLevel = Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+
+
+class LLMProvider(Protocol):
+    def complete(self, system: str, user: str) -> str: ...
 
 
 @dataclass(frozen=True)
