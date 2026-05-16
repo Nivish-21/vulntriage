@@ -1,9 +1,11 @@
+import json
+
 from rich import box
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from vulntriage.models import RankedCVE
+from vulntriage.models import RankedCVE, RiskLevel
 
 RISK_COLOURS: dict[str, str] = {
     "CRITICAL": "bold red",
@@ -11,6 +13,14 @@ RISK_COLOURS: dict[str, str] = {
     "MEDIUM": "yellow",
     "LOW": "cyan",
     "INFO": "dim",
+}
+
+SEVERITY: dict[str, int] = {
+    "CRITICAL": 4,
+    "HIGH": 3,
+    "MEDIUM": 2,
+    "LOW": 1,
+    "INFO": 0,
 }
 
 console = Console()
@@ -46,5 +56,26 @@ def render_table(ranked: list[RankedCVE]) -> None:
     console.print(table)
 
 
-def determine_exit_code(ranked: list[RankedCVE]) -> int:
-    return 1 if any(r.real_risk in {"CRITICAL", "HIGH"} for r in ranked) else 0
+def render_json(ranked: list[RankedCVE]) -> None:
+    print(
+        json.dumps(
+            [
+                {
+                    "rank": r.rank,
+                    "id": r.cve.id,
+                    "package": r.cve.package,
+                    "installed_version": r.cve.installed_version,
+                    "real_risk": r.real_risk,
+                    "reasoning": r.reasoning,
+                    "fix_command": r.fix_command,
+                }
+                for r in ranked
+            ],
+            indent=2,
+        )
+    )
+
+
+def determine_exit_code(ranked: list[RankedCVE], fail_on: RiskLevel = "HIGH") -> int:
+    threshold = SEVERITY[fail_on]
+    return 1 if any(SEVERITY[r.real_risk] >= threshold for r in ranked) else 0

@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -137,6 +137,142 @@ def test_scan_exits_1_on_auth_error(tmp_path: Path) -> None:
         )
     assert result.exit_code == 1
     assert "Invalid or expired" in result.output
+
+
+def test_scan_prints_provider_name(tmp_path: Path) -> None:
+    mock_provider = MagicMock()
+    mock_provider.name = "anthropic (claude-sonnet-4-6)"
+    with (
+        patch("vulntriage.cli.get_provider", return_value=mock_provider),
+        patch("vulntriage.cli.run_audit", return_value=[]),
+    ):
+        result = runner.invoke(app, ["scan", "--project-root", str(tmp_path)])
+    assert "anthropic (claude-sonnet-4-6)" in result.output
+
+
+def test_fail_on_medium_exits_1_on_medium_risk(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("MEDIUM")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--fail-on", "MEDIUM"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert result.exit_code == 1
+
+
+def test_fail_on_critical_exits_0_on_high_risk(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--fail-on", "CRITICAL"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert result.exit_code == 0
+
+
+def test_format_json_calls_render_json(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    ranked = [_make_ranked("HIGH")]
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.rank_cves", return_value=ranked),
+        patch("vulntriage.cli.render_json") as mock_json,
+        patch("vulntriage.cli.render_table") as mock_table,
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--format", "json"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    mock_json.assert_called_once_with(ranked)
+    mock_table.assert_not_called()
+    assert result.exit_code == 1
+
+
+def test_format_json_empty_calls_render_json_with_empty_list(tmp_path: Path) -> None:
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[]),
+        patch("vulntriage.cli.render_json") as mock_json,
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--format", "json"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    mock_json.assert_called_once_with([])
+    assert result.exit_code == 0
+
+
+def test_vulnignore_suppresses_cve(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / ".vulnignore").write_text("CVE-2023-32681 accepted\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.rank_cves") as mock_rank,
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    mock_rank.assert_not_called()
+    assert result.exit_code == 0
+
+
+def test_vulnignore_missing_file_does_not_error(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert result.exit_code == 1
+
+
+def test_scan_exits_1_on_invalid_fail_on() -> None:
+    result = runner.invoke(
+        app,
+        ["scan", "--fail-on", "EXTREME"],
+        env={"ANTHROPIC_API_KEY": "test-key"},
+    )
+    assert result.exit_code == 1
+    assert "invalid --fail-on" in result.output
+
+
+def test_scan_accepts_lowercase_fail_on(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--fail-on", "high"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert result.exit_code == 1
 
 
 def test_scan_warns_on_dropped_cves(tmp_path: Path) -> None:

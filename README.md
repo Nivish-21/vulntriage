@@ -50,6 +50,48 @@ vulntriage scan --project-root /path/to/project
 
 ---
 
+## Provider Selection
+
+`vulntriage` supports four LLM backends. Set `VULNTRIAGE_PROVIDER` to switch:
+
+| Provider | Env var | Install extra | Default model |
+|---|---|---|---|
+| `anthropic` (default) | `ANTHROPIC_API_KEY` | — | `claude-sonnet-4-6` |
+| `openai` | `OPENAI_API_KEY` | `pip install 'vulntriage[openai]'` | `gpt-4o-mini` |
+| `gemini` | `GOOGLE_API_KEY` | `pip install 'vulntriage[gemini]'` | `gemini-2.0-flash` |
+| `ollama` | — | `pip install 'vulntriage[ollama]'` | `llama3.2` |
+
+```bash
+# Use Gemini (free tier available at aistudio.google.com/apikey)
+export VULNTRIAGE_PROVIDER=gemini
+export GOOGLE_API_KEY="AIza..."
+vulntriage scan
+
+# Use Ollama (fully local, no API key needed)
+export VULNTRIAGE_PROVIDER=ollama
+vulntriage scan
+```
+
+### Ollama quickstart
+
+```bash
+# Install Ollama
+brew install ollama
+
+# Pull a model
+ollama pull llama3.2
+
+# Install the ollama extra
+pip install 'vulntriage[ollama]'
+
+# Run
+VULNTRIAGE_PROVIDER=ollama vulntriage scan
+```
+
+By default Ollama connects to `http://localhost:11434`. Override with `OLLAMA_HOST`. Use a different model with `OLLAMA_MODEL` (e.g. `OLLAMA_MODEL=mistral`).
+
+---
+
 ## CI Integration
 
 `vulntriage scan` exits **1** if any CVE is ranked `HIGH` or `CRITICAL`, and **0** otherwise.

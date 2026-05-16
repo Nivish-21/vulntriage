@@ -9,6 +9,8 @@ from vulntriage.exceptions import AuthError, ParseError
 from vulntriage.models import CVE
 from vulntriage.ranker import (
     AnthropicProvider,
+    GeminiProvider,
+    OllamaProvider,
     OpenAIProvider,
     build_prompt,
     get_provider,
@@ -81,7 +83,7 @@ def test_parse_claude_response_strips_code_fence() -> None:
     assert ranked[0].real_risk == "LOW"
 
 
-def test_parse_claude_response_unknown_id_skipped() -> None:
+def test_parse_claude_response_all_unknown_ids_raises() -> None:
     cve = _make_cve()
     response = json.dumps(
         [
@@ -93,7 +95,32 @@ def test_parse_claude_response_unknown_id_skipped() -> None:
             }
         ]
     )
-    assert parse_claude_response(response, [cve]) == []
+    with pytest.raises(ParseError, match="hallucinated"):
+        parse_claude_response(response, [cve])
+
+
+def test_parse_claude_response_partial_unknown_ids_kept() -> None:
+    cve_a = _make_cve("CVE-A")
+    cve_b = _make_cve("CVE-B", "urllib3")
+    response = json.dumps(
+        [
+            {
+                "id": "CVE-A",
+                "real_risk": "HIGH",
+                "reasoning": "x",
+                "fix_command": "pip install a",
+            },
+            {
+                "id": "CVE-UNKNOWN",
+                "real_risk": "LOW",
+                "reasoning": "y",
+                "fix_command": "pip install y",
+            },
+        ]
+    )
+    ranked = parse_claude_response(response, [cve_a, cve_b])
+    assert len(ranked) == 1
+    assert ranked[0].cve.id == "CVE-A"
 
 
 def test_parse_claude_response_invalid_json_raises() -> None:
@@ -273,6 +300,110 @@ def test_openai_provider_returns_text(monkeypatch: pytest.MonkeyPatch) -> None:
         mock_client.chat.completions.create.return_value = mock_response
         provider = OpenAIProvider()
         assert provider.complete("system", "user") == "hello"
+
+
+# ---------------------------------------------------------------------------
+# GeminiProvider
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_provider_raises_auth_error_when_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with pytest.raises(AuthError, match="GOOGLE_API_KEY"):
+        GeminiProvider()
+
+
+def test_gemini_provider_raises_auth_error_on_bad_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", "bad-key")
+
+    class FakeClientError(Exception):
+        status_code = 401
+
+    with patch("vulntriage.ranker._genai_module") as mock_genai:
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        mock_client.models.generate_content.side_effect = FakeClientError()
+        provider = GeminiProvider()
+        with pytest.raises(AuthError):
+            provider.complete("system", "user")
+
+
+def test_gemini_provider_raises_parse_error_on_empty_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.text = None
+    with patch("vulntriage.ranker._genai_module") as mock_genai:
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        mock_client.models.generate_content.return_value = mock_response
+        provider = GeminiProvider()
+        with pytest.raises(ParseError, match="empty"):
+            provider.complete("system", "user")
+
+
+def test_gemini_provider_returns_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    mock_response = MagicMock()
+    mock_response.text = "hello"
+    with patch("vulntriage.ranker._genai_module") as mock_genai:
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        mock_client.models.generate_content.return_value = mock_response
+        provider = GeminiProvider()
+        assert provider.complete("system", "user") == "hello"
+
+
+def test_get_provider_returns_gemini_when_env_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VULNTRIAGE_PROVIDER", "gemini")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    with patch("vulntriage.ranker._genai_module") as mock_genai:
+        mock_genai.Client.return_value = MagicMock()
+        assert isinstance(get_provider(), GeminiProvider)
+
+
+# ---------------------------------------------------------------------------
+# OllamaProvider
+# ---------------------------------------------------------------------------
+
+
+def test_ollama_provider_raises_parse_error_on_empty_content() -> None:
+    mock_response = MagicMock()
+    mock_response.message.content = None
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        mock_client.chat.return_value = mock_response
+        provider = OllamaProvider()
+        with pytest.raises(ParseError, match="empty"):
+            provider.complete("system", "user")
+
+
+def test_ollama_provider_returns_text() -> None:
+    mock_response = MagicMock()
+    mock_response.message.content = "hello"
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        mock_client.chat.return_value = mock_response
+        provider = OllamaProvider()
+        assert provider.complete("system", "user") == "hello"
+
+
+def test_get_provider_returns_ollama_when_env_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VULNTRIAGE_PROVIDER", "ollama")
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_ollama.Client.return_value = MagicMock()
+        assert isinstance(get_provider(), OllamaProvider)
 
 
 # ---------------------------------------------------------------------------

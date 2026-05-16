@@ -13,10 +13,20 @@ try:
 except ImportError:
     _openai_module = None  # type: ignore[assignment]
 
+try:
+    from google import genai as _genai_module
+except ImportError:
+    _genai_module = None  # type: ignore[assignment]
+
+try:
+    import ollama as _ollama_module
+except ImportError:
+    _ollama_module = None  # type: ignore[assignment]
+
 VALID_RISK_LEVELS = frozenset({"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"})
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
-MAX_TOKENS = 1024
+MAX_TOKENS = 4096
 # Static instructions live here so prompt caching can absorb them on repeat scans.
 # Cached tokens cost 10% of normal input price (Anthropic 5-min TTL).
 SYSTEM_PROMPT = (
@@ -40,6 +50,8 @@ SYSTEM_PROMPT = (
 
 
 class AnthropicProvider:
+    name = f"anthropic ({CLAUDE_MODEL})"
+
     def __init__(self) -> None:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -75,6 +87,8 @@ OPENAI_MODEL = "gpt-4o-mini"
 
 
 class OpenAIProvider:
+    name = f"openai ({OPENAI_MODEL})"
+
     def __init__(self) -> None:
         if _openai_module is None:
             raise ImportError(
@@ -105,7 +119,78 @@ class OpenAIProvider:
         return response.choices[0].message.content
 
 
-_PROVIDERS: dict[str, type] = {"anthropic": AnthropicProvider, "openai": OpenAIProvider}
+GEMINI_MODEL = "gemini-2.0-flash"
+
+
+class GeminiProvider:
+    name = f"gemini ({GEMINI_MODEL})"
+
+    def __init__(self) -> None:
+        if _genai_module is None:
+            raise ImportError(
+                "google-genai package is not installed. "
+                "Run: pip install 'vulntriage[gemini]'"
+            )
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise AuthError(
+                "GOOGLE_API_KEY is not set. Get a free key from https://aistudio.google.com/apikey"
+            )
+        self._client = _genai_module.Client(api_key=api_key)
+
+    def complete(self, system: str, user: str) -> str:
+        try:
+            response = self._client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user,
+                config=_genai_module.types.GenerateContentConfig(
+                    system_instruction=system,
+                ),
+            )
+        except Exception as exc:
+            if hasattr(exc, "status_code") and exc.status_code in (401, 403):
+                raise AuthError("Invalid or expired Google API key.") from exc
+            raise
+        if not response.text:
+            raise ParseError("Gemini returned an empty response.")
+        return response.text
+
+
+OLLAMA_MODEL_DEFAULT = "llama3.2"
+OLLAMA_HOST_DEFAULT = "http://localhost:11434"
+
+
+class OllamaProvider:
+    def __init__(self) -> None:
+        if _ollama_module is None:
+            raise ImportError(
+                "ollama package is not installed. Run: pip install 'vulntriage[ollama]'"
+            )
+        host = os.environ.get("OLLAMA_HOST", OLLAMA_HOST_DEFAULT)
+        self._model = os.environ.get("OLLAMA_MODEL", OLLAMA_MODEL_DEFAULT)
+        self.name = f"ollama ({self._model})"
+        self._client = _ollama_module.Client(host=host)
+
+    def complete(self, system: str, user: str) -> str:
+        response = self._client.chat(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        content = response.message.content
+        if not content:
+            raise ParseError("Ollama returned an empty response.")
+        return content
+
+
+_PROVIDERS: dict[str, type] = {
+    "anthropic": AnthropicProvider,
+    "openai": OpenAIProvider,
+    "gemini": GeminiProvider,
+    "ollama": OllamaProvider,
+}
 
 
 def get_provider(name: str | None = None) -> LLMProvider:
@@ -178,6 +263,11 @@ def parse_claude_response(response_text: str, cves: list[CVE]) -> list[RankedCVE
                 reasoning=reasoning,
                 fix_command=fix_command,
             )
+        )
+    if cves and not ranked:
+        raise ParseError(
+            "LLM response contained no recognised CVE IDs — "
+            "all entries were dropped. The model may have hallucinated IDs."
         )
     return ranked
 
