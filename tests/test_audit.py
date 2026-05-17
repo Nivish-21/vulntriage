@@ -1,5 +1,4 @@
 import json
-import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -80,13 +79,13 @@ def test_run_audit_success() -> None:
         ]
     ).encode()
     mock_result = MagicMock()
+    mock_result.returncode = 0
     mock_result.stdout = fake_output
     with patch("subprocess.run", return_value=mock_result) as mock_run:
         cves = run_audit()
     mock_run.assert_called_once_with(
-        ["pip-audit", "--format", "json", "--no-fail-on-found"],
+        ["pip-audit", "--format", "json"],
         capture_output=True,
-        check=True,
     )
     assert len(cves) == 1
     assert cves[0].package == "requests"
@@ -98,9 +97,37 @@ def test_run_audit_pip_audit_not_found() -> None:
             run_audit()
 
 
-def test_run_audit_nonzero_exit() -> None:
-    with patch(
-        "subprocess.run", side_effect=subprocess.CalledProcessError(1, "pip-audit")
-    ):
-        with pytest.raises(AuditError, match="exited with code 1"):
+def test_run_audit_error_exit() -> None:
+    mock_result = MagicMock()
+    mock_result.returncode = 2
+    mock_result.stderr = b"resolution failed"
+    with patch("subprocess.run", return_value=mock_result):
+        with pytest.raises(AuditError, match="exited with code 2"):
             run_audit()
+
+
+def test_run_audit_exit_1_returns_cves() -> None:
+    """exit code 1 = vulns found — should parse and return CVEs, not raise."""
+    fake_output = json.dumps(
+        [
+            {
+                "name": "requests",
+                "version": "2.28.0",
+                "vulns": [
+                    {
+                        "id": "PYSEC-2023-74",
+                        "fix_versions": ["2.31.0"],
+                        "aliases": [],
+                        "description": "test",
+                    }
+                ],
+            }
+        ]
+    ).encode()
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = fake_output
+    with patch("subprocess.run", return_value=mock_result):
+        cves = run_audit()
+    assert len(cves) == 1
+    assert cves[0].package == "requests"

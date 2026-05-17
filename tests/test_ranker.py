@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import anthropic
@@ -38,6 +39,8 @@ def _fake_response(cve_id: str = "CVE-2023-32681", risk: str = "HIGH") -> str:
                 "real_risk": risk,
                 "reasoning": "Direct dep used for every HTTP call.",
                 "fix_command": "pip install requests==2.31.0",
+                "cvss": "6.1",
+                "breaking_changes": "No breaking changes in this upgrade.",
             }
         ]
     )
@@ -380,6 +383,7 @@ def test_ollama_provider_raises_parse_error_on_empty_content() -> None:
     with patch("vulntriage.ranker._ollama_module") as mock_ollama:
         mock_client = MagicMock()
         mock_ollama.Client.return_value = mock_client
+        mock_client.ps.return_value = MagicMock(models=[])
         mock_client.chat.return_value = mock_response
         provider = OllamaProvider()
         with pytest.raises(ParseError, match="empty"):
@@ -392,9 +396,40 @@ def test_ollama_provider_returns_text() -> None:
     with patch("vulntriage.ranker._ollama_module") as mock_ollama:
         mock_client = MagicMock()
         mock_ollama.Client.return_value = mock_client
+        mock_client.ps.return_value = MagicMock(models=[])
         mock_client.chat.return_value = mock_response
         provider = OllamaProvider()
         assert provider.complete("system", "user") == "hello"
+
+
+def test_ollama_unloads_model_when_not_pre_loaded() -> None:
+    mock_response = MagicMock()
+    mock_response.message.content = "hello"
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        mock_client.ps.return_value = MagicMock(models=[])
+        mock_client.chat.return_value = mock_response
+        provider = OllamaProvider()
+        provider.complete("system", "user")
+        mock_client.generate.assert_called_once_with(
+            model=provider._model, prompt="", keep_alive=0
+        )
+
+
+def test_ollama_skips_unload_when_pre_loaded() -> None:
+    mock_response = MagicMock()
+    mock_response.message.content = "hello"
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        running_model = MagicMock()
+        running_model.model = os.environ.get("OLLAMA_MODEL", "llama3.2")
+        mock_client.ps.return_value = MagicMock(models=[running_model])
+        mock_client.chat.return_value = mock_response
+        provider = OllamaProvider()
+        provider.complete("system", "user")
+        mock_client.generate.assert_not_called()
 
 
 def test_get_provider_returns_ollama_when_env_set(

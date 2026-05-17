@@ -31,20 +31,29 @@ MAX_TOKENS = 4096
 # Cached tokens cost 10% of normal input price (Anthropic 5-min TTL).
 SYSTEM_PROMPT = (
     "You are a senior security engineer ranking Python vulnerabilities "
-    "by real exploitability. "
-    "You will receive CVE IDs with package names and versions inside "
-    "<cves> tags, and the project's installed dependency list inside "
-    "<stack> tags. "
-    "Rank each CVE by actual reachability in this specific project — "
-    "not raw CVSS score. "
+    "by real exploitability in a specific project. "
+    "You will receive CVE IDs with package names, versions, and descriptions inside "
+    "<cves> tags, and the project's dependency list inside <stack> tags. "
+    "Rank each CVE by actual reachability — not raw CVSS score.\n"
     "Rules:\n"
-    "- A transitive dep with no exposed API surface is LOW even if "
-    "CVSS is 9.8.\n"
-    "- A direct dep called at every request boundary is HIGH even if "
-    "CVSS is 5.0.\n"
+    "- A transitive dep with no exposed API surface is LOW even if CVSS is 9.8.\n"
+    "- A direct dep called at every request boundary is HIGH even if CVSS is 5.0.\n"
+    "- pip, setuptools, and other install/build tools are NOT reachable at "
+    "application runtime unless the app explicitly invokes pip at runtime. "
+    "Mark them LOW or INFO.\n"
     "- Only return IDs that appear in <cves>. Never invent new IDs.\n"
     "- fix_command must be a valid pip install command, nothing else.\n"
-    "- reasoning must be one sentence (<=20 words).\n"
+    "- reasoning: 1-2 sentences. Name the specific attack type (e.g. RCE via "
+    "unsafe deserialization, path traversal in file-upload handler, SSRF via "
+    "URL fetch). Then state reachability: name the specific API surface or "
+    "code path in this stack that would trigger it. Never write generic "
+    "statements like 'X is used for Y' without naming the attack vector.\n"
+    "- cvss: The published CVSS v3.1 base score as a decimal string "
+    "(e.g. '9.8'). Use 'N/A' if no score is publicly available.\n"
+    "- breaking_changes: 1 sentence. Describe any API changes, removed "
+    "features, or behaviour differences a developer must verify after "
+    "upgrading to the fix version. "
+    "If the upgrade is safe and backwards-compatible, say so explicitly.\n"
     "Return ONLY a valid JSON array. No markdown fences, no prose."
 )
 
@@ -170,6 +179,20 @@ class OllamaProvider:
         self._model = os.environ.get("OLLAMA_MODEL", OLLAMA_MODEL_DEFAULT)
         self.name = f"ollama ({self._model})"
         self._client = _ollama_module.Client(host=host)
+        self._was_loaded = self._is_model_loaded()
+
+    def _is_model_loaded(self) -> bool:
+        try:
+            running = self._client.ps()
+            return any(m.model == self._model for m in running.models)
+        except Exception:
+            return False
+
+    def _unload_model(self) -> None:
+        try:
+            self._client.generate(model=self._model, prompt="", keep_alive=0)
+        except Exception:
+            pass
 
     def complete(self, system: str, user: str) -> str:
         response = self._client.chat(
@@ -182,6 +205,8 @@ class OllamaProvider:
         content = response.message.content
         if not content:
             raise ParseError("Ollama returned an empty response.")
+        if not self._was_loaded:
+            self._unload_model()
         return content
 
 
@@ -225,8 +250,11 @@ def build_prompt(cves: list[CVE], stack_context: str) -> str:
         "Return a JSON array. Each item must have exactly these keys:\n"
         '  "id": string — must match an id from <cves>\n'
         '  "real_risk": string — one of CRITICAL, HIGH, MEDIUM, LOW, INFO\n'
-        '  "reasoning": string — one sentence (≤20 words)\n'
-        '  "fix_command": string — pip install command\n\n'
+        '  "reasoning": string — specific attack type + reachability in this '
+        "stack (1-2 sentences)\n"
+        '  "fix_command": string — pip install command\n'
+        '  "cvss": string — CVSS v3.1 base score (e.g. "9.8") or "N/A"\n'
+        '  "breaking_changes": string — what to verify after upgrading (1 sentence)\n\n'
         "Order by real_risk descending (CRITICAL first)."
     )
 
@@ -262,6 +290,8 @@ def parse_claude_response(response_text: str, cves: list[CVE]) -> list[RankedCVE
                 real_risk=real_risk,
                 reasoning=reasoning,
                 fix_command=fix_command,
+                cvss=item.get("cvss", ""),
+                breaking_changes=item.get("breaking_changes", ""),
             )
         )
     if cves and not ranked:

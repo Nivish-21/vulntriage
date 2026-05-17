@@ -41,8 +41,10 @@ def render_table(ranked: list[RankedCVE]) -> None:
     table.add_column("CVE / PYSEC ID", style="bold", min_width=18)
     table.add_column("Package", min_width=12)
     table.add_column("Risk", min_width=8)
+    table.add_column("CVSS", style="dim", min_width=5)
     table.add_column("Reasoning", min_width=30)
     table.add_column("Fix", style="green", min_width=25)
+    table.add_column("Breaking Changes", style="yellow", min_width=25)
     for r in ranked:
         colour = RISK_COLOURS.get(r.real_risk, "white")
         table.add_row(
@@ -50,8 +52,10 @@ def render_table(ranked: list[RankedCVE]) -> None:
             r.cve.id,
             f"{r.cve.package} {r.cve.installed_version}",
             f"[{colour}]{r.real_risk}[/{colour}]",
+            escape(r.cvss) if r.cvss else "—",
             escape(r.reasoning),
             escape(r.fix_command),
+            escape(r.breaking_changes),
         )
     console.print(table)
 
@@ -66,8 +70,10 @@ def render_json(ranked: list[RankedCVE]) -> None:
                     "package": r.cve.package,
                     "installed_version": r.cve.installed_version,
                     "real_risk": r.real_risk,
+                    "cvss": r.cvss,
                     "reasoning": r.reasoning,
                     "fix_command": r.fix_command,
+                    "breaking_changes": r.breaking_changes,
                 }
                 for r in ranked
             ],

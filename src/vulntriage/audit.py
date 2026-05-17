@@ -8,9 +8,15 @@ from vulntriage.models import CVE
 
 def parse_pip_audit_output(raw: str) -> list[CVE]:
     try:
-        data: list[dict[str, Any]] = json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ParseError(f"Invalid JSON from pip-audit: {exc}") from exc
+    # pip-audit >=2.x wraps output in {"dependencies": [...], "fixes": [...]}
+    # older versions returned a bare list
+    if isinstance(parsed, dict):
+        data: list[dict[str, Any]] = parsed.get("dependencies", [])
+    else:
+        data = parsed
     cves: list[CVE] = []
     for package in data:
         for vuln in package.get("vulns", []):
@@ -30,14 +36,16 @@ def parse_pip_audit_output(raw: str) -> list[CVE]:
 def run_audit() -> list[CVE]:
     try:
         result = subprocess.run(
-            ["pip-audit", "--format", "json", "--no-fail-on-found"],
+            ["pip-audit", "--format", "json"],
             capture_output=True,
-            check=True,
         )
     except FileNotFoundError as exc:
         raise AuditError(
             "pip-audit not found. Install it with: pip install pip-audit"
         ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise AuditError(f"pip-audit exited with code {exc.returncode}") from exc
+    # exit 0 = no vulns, exit 1 = vulns found — both produce valid JSON stdout
+    # exit 2+ = actual error (bad environment, resolution failure, etc.)
+    if result.returncode > 1:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise AuditError(f"pip-audit exited with code {result.returncode}: {stderr}")
     return parse_pip_audit_output(result.stdout.decode("utf-8"))

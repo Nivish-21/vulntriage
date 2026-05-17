@@ -1,26 +1,29 @@
-[
-  {
-    "name": "requests",
-    "version": "2.28.0",
-    "vulns": [
-      {
-        "id": "PYSEC-2023-74",
-        "fix_versions": ["2.31.0"],
-        "aliases": ["CVE-2023-32681"],
-        "description": "Requests 2.x before 2.31.0 allows attackers to cause proxy-authorization headers to be sent to unintended hosts via a crafted URL with multiple @ characters."
-      }
-    ]
-  },
-  {
-    "name": "urllib3",
-    "version": "1.26.0",
-    "vulns": [
-      {
-        "id": "PYSEC-2021-108",
-        "fix_versions": ["1.26.5"],
-        "aliases": ["CVE-2021-33503"],
-        "description": "urllib3 before 1.26.5 has catastrophic backtracking in authority regex when URL contains many @ characters."
-      }
-    ]
-  }
-]
+{
+  "dependencies": [
+    {
+      "name": "requests",
+      "version": "2.28.0",
+      "vulns": [
+        {
+          "id": "PYSEC-2023-74",
+          "fix_versions": ["2.31.0"],
+          "aliases": ["CVE-2023-32681"],
+          "description": "Requests 2.x before 2.31.0 allows attackers to cause proxy-authorization headers to be sent to unintended hosts via a crafted URL with multiple @ characters."
+        }
+      ]
+    },
+    {
+      "name": "urllib3",
+      "version": "1.26.0",
+      "vulns": [
+        {
+          "id": "PYSEC-2021-108",
+          "fix_versions": ["1.26.5"],
+          "aliases": ["CVE-2021-33503"],
+          "description": "urllib3 before 1.26.5 has catastrophic backtracking in authority regex when URL contains many @ characters."
+        }
+      ]
+    }
+  ],
+  "fixes": []
+}

@@ -97,5 +97,7 @@ def test_render_json_contains_expected_fields(capsys: object) -> None:
     assert item["package"] == "requests"
     assert item["installed_version"] == "2.28.0"
     assert item["real_risk"] == "HIGH"
+    assert "cvss" in item
     assert "reasoning" in item
     assert "fix_command" in item
+    assert "breaking_changes" in item

@@ -25,3 +25,5 @@ class RankedCVE:
     real_risk: RiskLevel
     reasoning: str
     fix_command: str
+    cvss: str = ""
+    breaking_changes: str = ""
