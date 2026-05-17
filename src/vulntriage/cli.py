@@ -1,15 +1,23 @@
 from pathlib import Path
 
 import typer
+from rich.console import Console
 
 from vulntriage.audit import run_audit
 from vulntriage.context import read_stack_context
 from vulntriage.exceptions import AuditError, AuthError, ContextError, ParseError
 from vulntriage.ignore import load_ignores
-from vulntriage.output import SEVERITY, determine_exit_code, render_json, render_table
+from vulntriage.output import (
+    SEVERITY,
+    determine_exit_code,
+    render_json,
+    render_table,
+    save_report,
+)
 from vulntriage.ranker import get_provider, rank_cves
 
 app = typer.Typer(help="Rank pip-audit CVEs by real exploitability using Claude AI.")
+_console = Console(stderr=True)
 
 
 @app.callback()
@@ -39,6 +47,13 @@ def scan(
         "-f",
         help="Output format: table (default) or json.",
     ),
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory to write a timestamped JSON report. Omit to skip saving.",
+        file_okay=False,
+        resolve_path=True,
+    ),
 ) -> None:
     """Run pip-audit and rank CVEs by real risk using Claude."""
     fail_on_upper = fail_on.upper()
@@ -59,7 +74,8 @@ def scan(
     typer.echo(f"Using provider: {provider.name}", err=True)
 
     try:
-        cves = run_audit()
+        with _console.status("Running pip-audit..."):
+            cves = run_audit()
     except AuditError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -86,7 +102,8 @@ def scan(
         stack_context = ""
 
     try:
-        ranked = rank_cves(cves, stack_context, provider=provider)
+        with _console.status(f"Ranking {len(cves)} CVE(s) with {provider.name}..."):
+            ranked = rank_cves(cves, stack_context, provider=provider)
     except AuthError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -104,4 +121,18 @@ def scan(
         render_json(ranked)
     else:
         render_table(ranked)
+
+    if output_dir is not None:
+        report_path = save_report(
+            ranked,
+            metadata={
+                "provider": provider.name,
+                "project_root": str(project_root),
+                "cves_found": len(cves),
+                "cves_ranked": len(ranked),
+            },
+            output_dir=output_dir,
+        )
+        typer.echo(f"Report saved: {report_path}", err=True)
+
     raise typer.Exit(determine_exit_code(ranked, fail_on=fail_on_upper))

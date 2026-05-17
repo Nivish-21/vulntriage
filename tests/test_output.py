@@ -1,8 +1,14 @@
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 from vulntriage.models import CVE, RankedCVE
-from vulntriage.output import determine_exit_code, render_json, render_table
+from vulntriage.output import (
+    determine_exit_code,
+    render_json,
+    render_table,
+    save_report,
+)
 
 
 def _make_ranked(real_risk: str, rank: int = 1) -> RankedCVE:
@@ -101,3 +107,46 @@ def test_render_json_contains_expected_fields(capsys: object) -> None:
     assert "reasoning" in item
     assert "fix_command" in item
     assert "breaking_changes" in item
+
+
+# --- save_report tests ---
+
+
+def test_save_report_creates_file(tmp_path: Path) -> None:
+    ranked = [_make_ranked("HIGH")]
+    path = save_report(
+        ranked, {"provider": "anthropic", "cves_found": 1, "cves_ranked": 1}, tmp_path
+    )
+    assert path.exists()
+    assert path.suffix == ".json"
+    assert path.parent == tmp_path
+
+
+def test_save_report_file_contents(tmp_path: Path) -> None:
+    ranked = [_make_ranked("HIGH")]
+    path = save_report(
+        ranked,
+        {
+            "provider": "anthropic",
+            "project_root": "/project",
+            "cves_found": 1,
+            "cves_ranked": 1,
+        },
+        tmp_path,
+    )
+    data = json.loads(path.read_text())
+    assert "timestamp" in data
+    assert data["provider"] == "anthropic"
+    assert data["cves_found"] == 1
+    assert data["cves_ranked"] == 1
+    assert len(data["results"]) == 1
+    assert data["results"][0]["id"] == "CVE-2023-32681"
+    assert data["results"][0]["real_risk"] == "HIGH"
+
+
+def test_save_report_creates_output_dir(tmp_path: Path) -> None:
+    nested = tmp_path / "reports" / "subdir"
+    ranked = [_make_ranked("LOW")]
+    path = save_report(ranked, {"provider": "openai"}, nested)
+    assert nested.is_dir()
+    assert path.exists()

@@ -44,7 +44,7 @@ packages = ["src/vulntriage"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=vulntriage --cov-report=term-missing --cov-fail-under=80"
+addopts = "--no-header --cov=vulntriage --cov-report=term-missing --cov-fail-under=80"
 
 [tool.black]
 line-length = 88

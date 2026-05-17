@@ -1,4 +1,6 @@
 import json
+from datetime import UTC, datetime
+from pathlib import Path
 
 from rich import box
 from rich.console import Console
@@ -85,3 +87,33 @@ def render_json(ranked: list[RankedCVE]) -> None:
 def determine_exit_code(ranked: list[RankedCVE], fail_on: RiskLevel = "HIGH") -> int:
     threshold = SEVERITY[fail_on]
     return 1 if any(SEVERITY[r.real_risk] >= threshold for r in ranked) else 0
+
+
+def save_report(
+    ranked: list[RankedCVE],
+    metadata: dict[str, object],
+    output_dir: Path,
+) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"vulntriage-{timestamp}.json"
+    report: dict[str, object] = {
+        "timestamp": timestamp,
+        **metadata,
+        "results": [
+            {
+                "rank": r.rank,
+                "id": r.cve.id,
+                "package": r.cve.package,
+                "installed_version": r.cve.installed_version,
+                "real_risk": r.real_risk,
+                "cvss": r.cvss,
+                "reasoning": r.reasoning,
+                "fix_command": r.fix_command,
+                "breaking_changes": r.breaking_changes,
+            }
+            for r in ranked
+        ],
+    }
+    path.write_text(json.dumps(report, indent=2))
+    return path

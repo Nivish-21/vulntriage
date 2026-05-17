@@ -298,3 +298,43 @@ def test_scan_warns_on_dropped_cves(tmp_path: Path) -> None:
             env={"ANTHROPIC_API_KEY": "test-key"},
         )
     assert "1 CVE(s) were dropped" in result.output
+
+
+def test_output_dir_calls_save_report(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    out_dir = tmp_path / "reports"
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.render_table"),
+        patch(
+            "vulntriage.cli.save_report", return_value=out_dir / "vulntriage-test.json"
+        ) as mock_save,
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--output-dir", str(out_dir)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    mock_save.assert_called_once()
+    assert "Report saved" in result.output
+    assert result.exit_code == 0
+
+
+def test_no_output_dir_does_not_call_save_report(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.render_table"),
+        patch("vulntriage.cli.save_report") as mock_save,
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    mock_save.assert_not_called()
+    assert result.exit_code == 0

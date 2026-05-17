@@ -6,7 +6,7 @@ import anthropic
 import openai
 import pytest
 
-from vulntriage.exceptions import AuthError, ParseError
+from vulntriage.exceptions import AuditError, AuthError, ParseError
 from vulntriage.models import CVE
 from vulntriage.ranker import (
     AnthropicProvider,
@@ -439,6 +439,73 @@ def test_get_provider_returns_ollama_when_env_set(
     with patch("vulntriage.ranker._ollama_module") as mock_ollama:
         mock_ollama.Client.return_value = MagicMock()
         assert isinstance(get_provider(), OllamaProvider)
+
+
+def test_ollama_skips_start_when_server_already_running() -> None:
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        mock_client.ps.return_value = MagicMock(models=[])
+        with patch("subprocess.Popen") as mock_popen:
+            OllamaProvider()
+            mock_popen.assert_not_called()
+
+
+def test_ollama_starts_server_when_not_running() -> None:
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        # First ps() call (reachability check) raises; second (poll) succeeds;
+        # third (model load snapshot) succeeds.
+        mock_client.ps.side_effect = [
+            Exception("refused"),
+            MagicMock(models=[]),
+            MagicMock(models=[]),
+        ]
+        with (
+            patch("subprocess.Popen") as mock_popen,
+            patch("time.sleep"),
+            patch("time.time", side_effect=[0.0, 1.0, 1.0]),
+        ):
+            mock_proc = MagicMock()
+            mock_popen.return_value = mock_proc
+            provider = OllamaProvider()
+            import subprocess as _subprocess
+
+            mock_popen.assert_called_once_with(
+                ["ollama", "serve"],
+                stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL,
+            )
+            assert provider._server_proc is mock_proc
+
+
+def test_ollama_raises_audit_error_when_binary_missing() -> None:
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        mock_client.ps.side_effect = Exception("refused")
+        with patch("subprocess.Popen", side_effect=FileNotFoundError()):
+            with pytest.raises(AuditError, match="not installed or not on PATH"):
+                OllamaProvider()
+
+
+def test_ollama_raises_audit_error_on_start_timeout() -> None:
+    with patch("vulntriage.ranker._ollama_module") as mock_ollama:
+        mock_client = MagicMock()
+        mock_ollama.Client.return_value = mock_client
+        # All ps() calls raise — server never becomes reachable.
+        mock_client.ps.side_effect = Exception("refused")
+        with (
+            patch("subprocess.Popen") as mock_popen,
+            patch("time.sleep"),
+            patch("time.time", side_effect=[0.0] + [16.0] * 20),
+        ):
+            mock_proc = MagicMock()
+            mock_popen.return_value = mock_proc
+            with pytest.raises(AuditError, match="did not become ready"):
+                OllamaProvider()
+            mock_proc.terminate.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,14 @@
 import json
 import os
 import re
+import subprocess
+import sys
+import time
 from typing import Any
 
 import anthropic
 
-from vulntriage.exceptions import AuthError, ParseError
+from vulntriage.exceptions import AuditError, AuthError, ParseError
 from vulntriage.models import CVE, LLMProvider, RankedCVE
 
 try:
@@ -167,6 +170,7 @@ class GeminiProvider:
 
 OLLAMA_MODEL_DEFAULT = "llama3.2"
 OLLAMA_HOST_DEFAULT = "http://localhost:11434"
+OLLAMA_START_TIMEOUT = 15
 
 
 class OllamaProvider:
@@ -179,7 +183,41 @@ class OllamaProvider:
         self._model = os.environ.get("OLLAMA_MODEL", OLLAMA_MODEL_DEFAULT)
         self.name = f"ollama ({self._model})"
         self._client = _ollama_module.Client(host=host)
+        self._server_proc: subprocess.Popen[bytes] | None = None
+        if not self._is_server_reachable():
+            self._start_ollama_server()
         self._was_loaded = self._is_model_loaded()
+
+    def _is_server_reachable(self) -> bool:
+        try:
+            self._client.ps()
+            return True
+        except Exception:
+            return False
+
+    def _start_ollama_server(self) -> None:
+        print("Starting Ollama server...", file=sys.stderr)
+        try:
+            self._server_proc = subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            raise AuditError(
+                "ollama is not installed or not on PATH. "
+                "Install from https://ollama.com/download"
+            ) from None
+        deadline = time.time() + OLLAMA_START_TIMEOUT
+        while time.time() < deadline:
+            time.sleep(0.5)
+            if self._is_server_reachable():
+                return
+        self._server_proc.terminate()
+        raise AuditError(
+            f"Ollama server did not become ready within {OLLAMA_START_TIMEOUT}s. "
+            "Is ollama installed correctly?"
+        )
 
     def _is_model_loaded(self) -> bool:
         try:
