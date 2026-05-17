@@ -104,9 +104,35 @@ def test_render_json_contains_expected_fields(capsys: object) -> None:
     assert item["installed_version"] == "2.28.0"
     assert item["real_risk"] == "HIGH"
     assert "cvss" in item
+    assert "kev" in item
+    assert "epss" in item
     assert "reasoning" in item
     assert "fix_command" in item
     assert "breaking_changes" in item
+
+
+def test_render_json_kev_and_epss_values(capsys: object) -> None:
+    cve = CVE(
+        id="CVE-2023-32681",
+        package="requests",
+        installed_version="2.28.0",
+        fix_versions=["2.31.0"],
+        aliases=[],
+        description="Test vuln",
+    )
+    ranked = RankedCVE(
+        rank=1,
+        cve=cve,
+        real_risk="CRITICAL",
+        reasoning="x",
+        fix_command="pip install requests==2.31.0",
+        kev=True,
+        epss="97.5%",
+    )
+    render_json([ranked])
+    items = json.loads(capsys.readouterr().out)
+    assert items[0]["kev"] is True
+    assert items[0]["epss"] == "97.5%"
 
 
 # --- save_report tests ---
@@ -140,8 +166,11 @@ def test_save_report_file_contents(tmp_path: Path) -> None:
     assert data["cves_found"] == 1
     assert data["cves_ranked"] == 1
     assert len(data["results"]) == 1
-    assert data["results"][0]["id"] == "CVE-2023-32681"
-    assert data["results"][0]["real_risk"] == "HIGH"
+    result = data["results"][0]
+    assert result["id"] == "CVE-2023-32681"
+    assert result["real_risk"] == "HIGH"
+    assert "kev" in result
+    assert "epss" in result
 
 
 def test_save_report_creates_output_dir(tmp_path: Path) -> None:

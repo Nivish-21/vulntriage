@@ -44,17 +44,22 @@ def render_table(ranked: list[RankedCVE]) -> None:
     table.add_column("Package", min_width=12)
     table.add_column("Risk", min_width=8)
     table.add_column("CVSS", style="dim", min_width=5)
+    table.add_column("EPSS", style="dim", min_width=6)
     table.add_column("Reasoning", min_width=30)
     table.add_column("Fix", style="green", min_width=25)
     table.add_column("Breaking Changes", style="yellow", min_width=25)
     for r in ranked:
         colour = RISK_COLOURS.get(r.real_risk, "white")
+        cve_cell = r.cve.id
+        if r.kev:
+            cve_cell = f"{r.cve.id}\n[bold yellow]★ CISA KEV[/bold yellow]"
         table.add_row(
             str(r.rank),
-            r.cve.id,
+            cve_cell,
             f"{r.cve.package} {r.cve.installed_version}",
             f"[{colour}]{r.real_risk}[/{colour}]",
             escape(r.cvss) if r.cvss else "—",
+            escape(r.epss) if r.epss else "—",
             escape(r.reasoning),
             escape(r.fix_command),
             escape(r.breaking_changes),
@@ -73,6 +78,8 @@ def render_json(ranked: list[RankedCVE]) -> None:
                     "installed_version": r.cve.installed_version,
                     "real_risk": r.real_risk,
                     "cvss": r.cvss,
+                    "kev": r.kev,
+                    "epss": r.epss,
                     "reasoning": r.reasoning,
                     "fix_command": r.fix_command,
                     "breaking_changes": r.breaking_changes,
@@ -108,6 +115,8 @@ def save_report(
                 "installed_version": r.cve.installed_version,
                 "real_risk": r.real_risk,
                 "cvss": r.cvss,
+                "kev": r.kev,
+                "epss": r.epss,
                 "reasoning": r.reasoning,
                 "fix_command": r.fix_command,
                 "breaking_changes": r.breaking_changes,

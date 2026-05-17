@@ -1,8 +1,8 @@
 # vulntriage
 
-Rank `pip-audit` CVEs by real exploitability using Claude AI.
+Rank `pip-audit` CVEs by real exploitability using an LLM.
 
-`pip-audit` reports every vulnerability your dependencies carry — but a CVSS 9.8 in a transitive dependency you never call is not the same as a CVSS 5.0 in your HTTP client that handles every request. `vulntriage` feeds your CVE list and your actual dependency stack to Claude, which ranks them by **real reachability** rather than raw severity score.
+`pip-audit` reports every vulnerability your dependencies carry — but a CVSS 9.8 in a transitive dependency you never call is not the same risk as a CVSS 5.0 in your HTTP client that handles every request. `vulntriage` feeds your CVE list, your actual dependency stack, and authoritative threat intelligence (NVD CVSS, CISA KEV, EPSS) to an LLM, which ranks them by **real reachability** rather than raw severity score.
 
 ---
 
@@ -10,7 +10,7 @@ Rank `pip-audit` CVEs by real exploitability using Claude AI.
 
 - Python 3.11+
 - `pip-audit` installed and on `PATH` (`pip install pip-audit`)
-- An Anthropic API key (get one at [console.anthropic.com](https://console.anthropic.com))
+- An Anthropic API key — or credentials for OpenAI, Gemini, or a local Ollama instance
 
 ---
 
@@ -32,21 +32,100 @@ vulntriage scan
 
 # Scan a specific project
 vulntriage scan --project-root /path/to/project
+
+# Gate CI on CRITICAL only (not the default HIGH)
+vulntriage scan --fail-on CRITICAL
+
+# Save a timestamped JSON report
+vulntriage scan --output-dir ./reports
+
+# Skip all network fetches (use cached threat intel only)
+vulntriage scan --offline
+
+# Output machine-readable JSON (status messages go to stderr)
+vulntriage scan --format json
 ```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--project-root / -p` | `.` | Directory containing `requirements.txt` or `pyproject.toml` |
+| `--fail-on` | `HIGH` | Exit 1 if any CVE at or above this severity: `CRITICAL / HIGH / MEDIUM / LOW / INFO` |
+| `--format / -f` | `table` | Output format: `table` (Rich) or `json` (pipe-safe) |
+| `--output-dir` | — | Save a timestamped JSON report to this directory after each scan |
+| `--offline` | — | Skip all external API calls; use cached threat intel only |
+
+---
 
 ### Output
 
 ```
-╭──────────────────────────────────────────────────────────────╮
-│             vulntriage — CVE Priority Report                  │
-├───┬──────────────────┬──────────────────┬──────┬─────────────┤
-│ # │ CVE / PYSEC ID   │ Package          │ Risk │ Fix         │
-├───┼──────────────────┼──────────────────┼──────┼─────────────┤
-│ 1 │ CVE-2023-32681   │ requests 2.28.0  │ HIGH │ pip install │
-│   │                  │                  │      │ requests==  │
-│   │                  │                  │      │ 2.31.0      │
-╰───┴──────────────────┴──────────────────┴──────┴─────────────╯
+╭─────────────────────────────────────────────────────────────╮
+│             vulntriage — CVE Priority Report                 │
+├───┬──────────────────────┬──────────────────┬──────┬──────┬───────┬───────────────────────────────────┬──────────────────────────────┬──────────────────────────────────╮
+│ # │ CVE / PYSEC ID       │ Package          │ Risk │ CVSS │ EPSS  │ Reasoning                         │ Breaking Changes              │ Fix                              │
+├───┼──────────────────────┼──────────────────┼──────┼──────┼───────┼───────────────────────────────────┼──────────────────────────────┼──────────────────────────────────┤
+│ 1 │ CVE-2024-35195       │ requests 2.31.0  │ HIGH │ 9.1  │ 12.3% │ SSRF via proxied requests; direct │ verify=True is now the        │ pip install requests>=2.32.0     │
+│   │ ★ CISA KEV           │ → 2.32.0         │      │      │       │ dep called at every API boundary  │ default—audit any verify=False │                                  │
+├───┼──────────────────────┼──────────────────┼──────┼──────┼───────┼───────────────────────────────────┼──────────────────────────────┼──────────────────────────────────┤
+│ 2 │ CVE-2022-40897       │ setuptools 65.5.0│ LOW  │ 7.5  │  0.1% │ ReDoS in package metadata parser; │ No breaking changes in patch  │ pip install setuptools>=65.5.1   │
+│   │                      │ → 65.5.1         │      │      │       │ not reachable at app runtime      │ release                       │                                  │
+╰───┴──────────────────────┴──────────────────┴──────┴──────┴───────┴───────────────────────────────────┴──────────────────────────────┴──────────────────────────────────╯
 ```
+
+`★ CISA KEV` — CISA has confirmed this CVE is actively exploited in the wild.
+
+---
+
+## Threat Intelligence
+
+Before the LLM call, `vulntriage` fetches authoritative threat data from three public feeds and injects it into the prompt:
+
+| Feed | What it provides | Rate limit |
+|---|---|---|
+| [NVD REST API v2](https://nvd.nist.gov/developers/vulnerabilities) | CVSS v3.1/v3.0/v2 base score per CVE | 5 req/30s free; 50 req/30s with `NVD_API_KEY` |
+| [CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | Whether each CVE is actively exploited in the wild | Single request, no key needed |
+| [FIRST EPSS API](https://www.first.org/epss) | Exploitation probability percentage | Batch request, no key needed |
+
+All three are cached at `~/.cache/vulntriage/` with a 24-hour TTL. The first scan pays the network cost; subsequent scans are instant.
+
+**NVD scores are authoritative.** The NVD CVSS value always overrides whatever score the LLM returns.
+
+### Speeding up NVD fetches
+
+Without an NVD API key, the tool pauses 6.1 seconds between CVE lookups to stay under the public rate limit. With a key, the pause drops to 0.7 seconds — significant for projects with many CVEs.
+
+```bash
+# Get a free key at https://nvd.nist.gov/developers/request-an-api-key
+export NVD_API_KEY="your-key-here"
+vulntriage scan
+```
+
+### Offline mode
+
+```bash
+# Skip all three feeds; use whatever is in the local cache
+vulntriage scan --offline
+```
+
+Use `--offline` in air-gapped environments or when deterministic scan time matters. The scan proceeds without threat intel if the cache is empty — CVSS, KEV, and EPSS fields are simply absent from the prompt.
+
+---
+
+## Suppressing CVEs
+
+Create a `.vulnignore` file in your project root to suppress CVEs your team has reviewed and accepted:
+
+```
+# Accepted — only reachable in development scripts, not at runtime
+CVE-2022-40897
+
+# Reviewed and accepted
+CVE-2023-32681 Not reachable via our API surface — verified 2024-01-15
+```
+
+Lines starting with `#` are comments. Text after the CVE ID is treated as a reason and ignored by the tool. Suppressed CVEs are excluded before the LLM call and do not count toward the exit code.
 
 ---
 
@@ -62,39 +141,34 @@ vulntriage scan --project-root /path/to/project
 | `ollama` | — | `pip install 'vulntriage[ollama]'` | `llama3.2` |
 
 ```bash
-# Use Gemini (free tier available at aistudio.google.com/apikey)
+# Use Gemini (free tier at aistudio.google.com/apikey)
 export VULNTRIAGE_PROVIDER=gemini
 export GOOGLE_API_KEY="AIza..."
 vulntriage scan
 
-# Use Ollama (fully local, no API key needed)
+# Use Ollama — fully local, no dependency data leaves your machine
 export VULNTRIAGE_PROVIDER=ollama
 vulntriage scan
 ```
 
+**Privacy note:** All providers except Ollama send your dependency names to an external API. If your dependency list is sensitive, use `VULNTRIAGE_PROVIDER=ollama`.
+
 ### Ollama quickstart
 
 ```bash
-# Install Ollama
 brew install ollama
-
-# Pull a model
 ollama pull llama3.2
-
-# Install the ollama extra
 pip install 'vulntriage[ollama]'
-
-# Run
 VULNTRIAGE_PROVIDER=ollama vulntriage scan
 ```
 
-By default Ollama connects to `http://localhost:11434`. Override with `OLLAMA_HOST`. Use a different model with `OLLAMA_MODEL` (e.g. `OLLAMA_MODEL=mistral`).
+By default Ollama connects to `http://localhost:11434`. Override with `OLLAMA_HOST`. Use a different model with `OLLAMA_MODEL` (e.g. `OLLAMA_MODEL=mistral`). If the Ollama server is not running, `vulntriage` will start it automatically.
 
 ---
 
 ## CI Integration
 
-`vulntriage scan` exits **1** if any CVE is ranked `HIGH` or `CRITICAL`, and **0** otherwise.
+`vulntriage scan` exits **1** if any CVE is ranked at or above `--fail-on` (default: `HIGH`), and **0** otherwise.
 
 ### GitHub Actions
 
@@ -102,9 +176,22 @@ By default Ollama connects to `http://localhost:11434`. Override with `OLLAMA_HO
 - name: Audit CVEs
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    NVD_API_KEY: ${{ secrets.NVD_API_KEY }}      # optional but speeds up NVD lookups
   run: |
     pip install pip-audit vulntriage
-    vulntriage scan
+    vulntriage scan --fail-on HIGH
+```
+
+Gate on CRITICAL only:
+
+```yaml
+    vulntriage scan --fail-on CRITICAL
+```
+
+Save a report as a CI artifact:
+
+```yaml
+    vulntriage scan --output-dir ./reports --format json
 ```
 
 ### GitLab CI
@@ -113,9 +200,10 @@ By default Ollama connects to `http://localhost:11434`. Override with `OLLAMA_HO
 audit:
   script:
     - pip install pip-audit vulntriage
-    - vulntriage scan
+    - vulntriage scan --fail-on HIGH
   variables:
     ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
+    NVD_API_KEY: $NVD_API_KEY
 ```
 
 ---
@@ -124,34 +212,36 @@ audit:
 
 1. Runs `pip-audit --format json` as a subprocess
 2. Reads `requirements.txt` or `pyproject.toml` to understand your actual stack
-3. Sends both to Claude with a prompt that emphasises **reachability over CVSS**
-4. Renders a ranked table via Rich
-5. Exits 1 if any HIGH or CRITICAL finding — zero otherwise
+3. Loads `.vulnignore` and removes suppressed CVEs
+4. Fetches threat intelligence from NVD, CISA KEV, and EPSS (skipped with `--offline`; all three cached 24h at `~/.cache/vulntriage/`)
+5. Sends the enriched CVE list and stack context to the configured LLM
+6. NVD CVSS overrides any score the LLM returns
+7. Renders a ranked Rich table or JSON output
+8. Exits 1 if any CVE is at or above `--fail-on` severity
 
-Claude reasoning example:
+LLM reasoning example:
 
-> *"requests is a direct dependency called at every API boundary — HIGH. certifi is transitive, never imported by your code — LOW despite CVSS 8.8."*
+> *"requests is a direct dependency called at every API boundary — HIGH (SSRF via proxied requests). setuptools is not reachable at application runtime — LOW despite CVSS 7.5."*
 
 ---
 
 ## Cost
 
-Each scan makes one Claude API call. At current `claude-sonnet-4-6` pricing, a typical scan with 5–10 CVEs costs roughly **$0.03–0.08**.
+Each scan makes one LLM API call. At `claude-sonnet-4-6` pricing (~$3/M input, $15/M output), a typical scan with 5–10 CVEs costs roughly **$0.004–0.01**. The static system prompt is cached across repeat scans (Anthropic 5-min TTL), cutting cost on subsequent runs by ~80%.
 
 ---
 
-## Scope (v1)
+## Scope
 
 - pip only (no npm, cargo, etc.)
 - Context from `requirements.txt` / `pyproject.toml` — no static call-graph analysis
-- No caching between scans
+- Threat intel cached at `~/.cache/vulntriage/` with a 24-hour TTL
 
 ---
 
 ## Development
 
 ```bash
-# Clone and set up
 git clone https://github.com/your-org/vulntriage
 cd vulntriage
 python -m venv .venv && source .venv/bin/activate

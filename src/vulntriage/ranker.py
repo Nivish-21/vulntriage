@@ -37,10 +37,17 @@ SYSTEM_PROMPT = (
     "by real exploitability in a specific project. "
     "You will receive CVE IDs with package names, versions, and descriptions inside "
     "<cves> tags, and the project's dependency list inside <stack> tags. "
+    "Each CVE entry may include threat intelligence fields:\n"
+    "  cvss_score — authoritative CVSS v3.1/v3.0 base score from NVD"
+    " (empty if unavailable)\n"
+    "  kev — true if CISA has confirmed this CVE is actively exploited in the wild\n"
+    "  epss_pct — EPSS exploitation probability percentage (e.g. '97.5%')\n"
     "Rank each CVE by actual reachability — not raw CVSS score.\n"
     "Rules:\n"
     "- A transitive dep with no exposed API surface is LOW even if CVSS is 9.8.\n"
     "- A direct dep called at every request boundary is HIGH even if CVSS is 5.0.\n"
+    "- kev=true is strong evidence of real-world exploitation — weight it heavily.\n"
+    "- High epss_pct (>50%) indicates the community expects exploitation soon.\n"
     "- pip, setuptools, and other install/build tools are NOT reachable at "
     "application runtime unless the app explicitly invokes pip at runtime. "
     "Mark them LOW or INFO.\n"
@@ -265,19 +272,39 @@ def get_provider(name: str | None = None) -> LLMProvider:
     return cls()
 
 
-def _cve_to_dict(cve: CVE) -> dict[str, Any]:
+def _cve_to_dict(
+    cve: CVE,
+    nvd_scores: dict[str, str] | None = None,
+    kev_set: set[str] | None = None,
+    epss_scores: dict[str, str] | None = None,
+) -> dict[str, Any]:
     # Omit description and aliases — Claude already knows CVE details from training.
     # Sending them back would add tokens and create a prompt-injection surface.
-    return {
+    entry: dict[str, Any] = {
         "id": cve.id,
         "package": cve.package,
         "installed_version": cve.installed_version,
         "fix_versions": cve.fix_versions,
     }
+    if nvd_scores is not None:
+        entry["cvss_score"] = nvd_scores.get(cve.id, "")
+    if kev_set is not None:
+        entry["kev"] = cve.id in kev_set
+    if epss_scores is not None:
+        entry["epss_pct"] = epss_scores.get(cve.id, "")
+    return entry
 
 
-def build_prompt(cves: list[CVE], stack_context: str) -> str:
-    cve_list = json.dumps([_cve_to_dict(c) for c in cves], indent=2)
+def build_prompt(
+    cves: list[CVE],
+    stack_context: str,
+    nvd_scores: dict[str, str] | None = None,
+    kev_set: set[str] | None = None,
+    epss_scores: dict[str, str] | None = None,
+) -> str:
+    cve_list = json.dumps(
+        [_cve_to_dict(c, nvd_scores, kev_set, epss_scores) for c in cves], indent=2
+    )
     return (
         "<stack>\n"
         f"{stack_context}\n"
@@ -297,7 +324,13 @@ def build_prompt(cves: list[CVE], stack_context: str) -> str:
     )
 
 
-def parse_claude_response(response_text: str, cves: list[CVE]) -> list[RankedCVE]:
+def parse_claude_response(
+    response_text: str,
+    cves: list[CVE],
+    nvd_scores: dict[str, str] | None = None,
+    kev_set: set[str] | None = None,
+    epss_scores: dict[str, str] | None = None,
+) -> list[RankedCVE]:
     cve_by_id = {c.id: c for c in cves}
     block_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", response_text)
     json_str = block_match.group(1).strip() if block_match else response_text.strip()
@@ -321,6 +354,8 @@ def parse_claude_response(response_text: str, cves: list[CVE]) -> list[RankedCVE
         cve = cve_by_id.get(item_id)
         if cve is None:
             continue
+        # NVD score is authoritative; override LLM-returned CVSS when available.
+        cvss = (nvd_scores or {}).get(item_id) or item.get("cvss", "")
         ranked.append(
             RankedCVE(
                 rank=i,
@@ -328,8 +363,10 @@ def parse_claude_response(response_text: str, cves: list[CVE]) -> list[RankedCVE
                 real_risk=real_risk,
                 reasoning=reasoning,
                 fix_command=fix_command,
-                cvss=item.get("cvss", ""),
+                cvss=cvss,
                 breaking_changes=item.get("breaking_changes", ""),
+                kev=item_id in (kev_set or set()),
+                epss=(epss_scores or {}).get(item_id, ""),
             )
         )
     if cves and not ranked:
@@ -344,8 +381,12 @@ def rank_cves(
     cves: list[CVE],
     stack_context: str,
     provider: LLMProvider | None = None,
+    nvd_scores: dict[str, str] | None = None,
+    kev_set: set[str] | None = None,
+    epss_scores: dict[str, str] | None = None,
 ) -> list[RankedCVE]:
     if provider is None:
         provider = get_provider()
-    response_text = provider.complete(SYSTEM_PROMPT, build_prompt(cves, stack_context))
-    return parse_claude_response(response_text, cves)
+    prompt = build_prompt(cves, stack_context, nvd_scores, kev_set, epss_scores)
+    response_text = provider.complete(SYSTEM_PROMPT, prompt)
+    return parse_claude_response(response_text, cves, nvd_scores, kev_set, epss_scores)

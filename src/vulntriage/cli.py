@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import typer
@@ -5,8 +6,11 @@ from rich.console import Console
 
 from vulntriage.audit import run_audit
 from vulntriage.context import read_stack_context
+from vulntriage.epss import fetch_epss
 from vulntriage.exceptions import AuditError, AuthError, ContextError, ParseError
 from vulntriage.ignore import load_ignores
+from vulntriage.kev import fetch_kev
+from vulntriage.nvd import fetch_cvss_scores
 from vulntriage.output import (
     SEVERITY,
     determine_exit_code,
@@ -53,6 +57,11 @@ def scan(
         help="Directory to write a timestamped JSON report. Omit to skip saving.",
         file_okay=False,
         resolve_path=True,
+    ),
+    offline: bool = typer.Option(
+        False,
+        "--offline",
+        help="Skip all network calls (NVD, CISA KEV, EPSS). Uses cached data only.",
     ),
 ) -> None:
     """Run pip-audit and rank CVEs by real risk using Claude."""
@@ -101,9 +110,24 @@ def scan(
         typer.echo(f"Warning: {exc}. Proceeding without stack context.", err=True)
         stack_context = ""
 
+    cve_ids = [c.id for c in cves]
+    nvd_api_key: str | None = os.environ.get("NVD_API_KEY") or None
+
+    with _console.status("Fetching threat intelligence (NVD, KEV, EPSS)..."):
+        nvd_scores = fetch_cvss_scores(cve_ids, api_key=nvd_api_key, offline=offline)
+        kev_set = fetch_kev(offline=offline)
+        epss_scores = fetch_epss(cve_ids, offline=offline)
+
     try:
         with _console.status(f"Ranking {len(cves)} CVE(s) with {provider.name}..."):
-            ranked = rank_cves(cves, stack_context, provider=provider)
+            ranked = rank_cves(
+                cves,
+                stack_context,
+                provider=provider,
+                nvd_scores=nvd_scores,
+                kev_set=kev_set,
+                epss_scores=epss_scores,
+            )
     except AuthError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)

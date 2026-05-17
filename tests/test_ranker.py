@@ -533,3 +533,140 @@ def test_rank_cves_passes_system_and_prompt_to_provider() -> None:
     assert "security engineer" in system_arg.lower()
     assert "CVE-2023-32681" in user_arg
     assert "stack-context" in user_arg
+
+
+# ---------------------------------------------------------------------------
+# build_prompt — threat intelligence fields
+# ---------------------------------------------------------------------------
+
+
+def test_build_prompt_includes_cvss_score_when_nvd_scores_provided() -> None:
+    cve = _make_cve()
+    nvd_scores = {"CVE-2023-32681": "9.8"}
+    prompt = build_prompt([cve], "stack", nvd_scores=nvd_scores)
+    assert "cvss_score" in prompt
+    assert "9.8" in prompt
+
+
+def test_build_prompt_includes_kev_true_when_in_kev_set() -> None:
+    cve = _make_cve()
+    kev_set = {"CVE-2023-32681"}
+    prompt = build_prompt([cve], "stack", kev_set=kev_set)
+    data = json.loads(prompt.split("<cves>")[1].split("</cves>")[0].strip())
+    assert data[0]["kev"] is True
+
+
+def test_build_prompt_includes_kev_false_when_not_in_kev_set() -> None:
+    cve = _make_cve()
+    kev_set: set[str] = set()
+    prompt = build_prompt([cve], "stack", kev_set=kev_set)
+    data = json.loads(prompt.split("<cves>")[1].split("</cves>")[0].strip())
+    assert data[0]["kev"] is False
+
+
+def test_build_prompt_includes_epss_pct_when_epss_scores_provided() -> None:
+    cve = _make_cve()
+    epss_scores = {"CVE-2023-32681": "97.5%"}
+    prompt = build_prompt([cve], "stack", epss_scores=epss_scores)
+    assert "epss_pct" in prompt
+    assert "97.5%" in prompt
+
+
+def test_build_prompt_omits_intel_fields_when_not_provided() -> None:
+    cve = _make_cve()
+    prompt = build_prompt([cve], "stack")
+    data = json.loads(prompt.split("<cves>")[1].split("</cves>")[0].strip())
+    assert "cvss_score" not in data[0]
+    assert "kev" not in data[0]
+    assert "epss_pct" not in data[0]
+
+
+# ---------------------------------------------------------------------------
+# parse_claude_response — threat intelligence overrides
+# ---------------------------------------------------------------------------
+
+
+def test_parse_claude_response_nvd_overrides_llm_cvss() -> None:
+    cve = _make_cve()
+    # LLM returns cvss "6.1"; NVD authoritative score is "9.8"
+    nvd_scores = {"CVE-2023-32681": "9.8"}
+    ranked = parse_claude_response(_fake_response(), [cve], nvd_scores=nvd_scores)
+    assert ranked[0].cvss == "9.8"
+
+
+def test_parse_claude_response_uses_llm_cvss_when_no_nvd() -> None:
+    cve = _make_cve()
+    ranked = parse_claude_response(_fake_response(), [cve])
+    assert ranked[0].cvss == "6.1"
+
+
+def test_parse_claude_response_sets_kev_true_for_cve_in_kev_set() -> None:
+    cve = _make_cve()
+    kev_set = {"CVE-2023-32681"}
+    ranked = parse_claude_response(_fake_response(), [cve], kev_set=kev_set)
+    assert ranked[0].kev is True
+
+
+def test_parse_claude_response_sets_kev_false_when_not_in_kev_set() -> None:
+    cve = _make_cve()
+    kev_set: set[str] = {"CVE-UNRELATED"}
+    ranked = parse_claude_response(_fake_response(), [cve], kev_set=kev_set)
+    assert ranked[0].kev is False
+
+
+def test_parse_claude_response_sets_epss_from_epss_scores() -> None:
+    cve = _make_cve()
+    epss_scores = {"CVE-2023-32681": "97.5%"}
+    ranked = parse_claude_response(_fake_response(), [cve], epss_scores=epss_scores)
+    assert ranked[0].epss == "97.5%"
+
+
+def test_parse_claude_response_epss_empty_when_not_in_scores() -> None:
+    cve = _make_cve()
+    ranked = parse_claude_response(_fake_response(), [cve], epss_scores={})
+    assert ranked[0].epss == ""
+
+
+# ---------------------------------------------------------------------------
+# rank_cves — intel params passed through
+# ---------------------------------------------------------------------------
+
+
+def test_rank_cves_passes_intel_to_provider_prompt() -> None:
+    cve = _make_cve()
+    mock_provider = MagicMock()
+    mock_provider.complete.return_value = _fake_response()
+    nvd_scores = {"CVE-2023-32681": "9.8"}
+    kev_set = {"CVE-2023-32681"}
+    epss_scores = {"CVE-2023-32681": "97.5%"}
+    rank_cves(
+        [cve],
+        "stack",
+        provider=mock_provider,
+        nvd_scores=nvd_scores,
+        kev_set=kev_set,
+        epss_scores=epss_scores,
+    )
+    _, user_arg = mock_provider.complete.call_args[0]
+    assert "9.8" in user_arg
+    assert "97.5%" in user_arg
+
+
+def test_rank_cves_intel_overrides_applied_to_result() -> None:
+    cve = _make_cve()
+    mock_provider = MagicMock()
+    mock_provider.complete.return_value = _fake_response()
+    nvd_scores = {"CVE-2023-32681": "9.8"}
+    kev_set = {"CVE-2023-32681"}
+    epss_scores = {"CVE-2023-32681": "97.5%"}
+    ranked = rank_cves(
+        [cve],
+        "stack",
+        provider=mock_provider,
+        nvd_scores=nvd_scores,
+        kev_set=kev_set,
+        epss_scores=epss_scores,
+    )
+    assert ranked[0].cvss == "9.8"
+    assert ranked[0].kev is True
+    assert ranked[0].epss == "97.5%"

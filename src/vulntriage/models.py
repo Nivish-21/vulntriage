@@ -27,3 +27,5 @@ class RankedCVE:
     fix_command: str
     cvss: str = ""
     breaking_changes: str = ""
+    kev: bool = False
+    epss: str = ""
