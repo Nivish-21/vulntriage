@@ -242,8 +242,8 @@ Each scan makes one LLM API call. At `claude-sonnet-4-6` pricing (~$3/M input, $
 ## Development
 
 ```bash
-git clone https://github.com/your-org/vulntriage
-cd vulntriage
+git clone https://github.com/Nivish-21/Vuln
+cd Vuln
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
