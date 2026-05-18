@@ -1,13 +1,21 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
-from vulntriage.cli import app
+from vulntriage.cli import _ranked_to_dict, _resolve_cve_id, app
 from vulntriage.exceptions import AuditError, AuthError, ContextError, ParseError
 from vulntriage.models import CVE, RankedCVE
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _no_scan_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from touching the real on-disk scan cache."""
+    monkeypatch.setattr("vulntriage.cli.scan_cache_get", lambda key: None)
+    monkeypatch.setattr("vulntriage.cli.scan_cache_set", lambda key, data: None)
 
 
 def _make_cve() -> CVE:
@@ -338,3 +346,186 @@ def test_no_output_dir_does_not_call_save_report(tmp_path: Path) -> None:
         )
     mock_save.assert_not_called()
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# _resolve_cve_id
+# ---------------------------------------------------------------------------
+
+
+def _make_pysec_cve(aliases: list[str] | None = None) -> CVE:
+    return CVE(
+        id="PYSEC-2022-43012",
+        package="setuptools",
+        installed_version="65.0.0",
+        fix_versions=["65.5.1"],
+        aliases=aliases if aliases is not None else ["CVE-2022-40897"],
+        description="Test PYSEC vuln",
+    )
+
+
+def test_resolve_cve_id_returns_first_cve_alias() -> None:
+    assert _resolve_cve_id(_make_pysec_cve()) == "CVE-2022-40897"
+
+
+def test_resolve_cve_id_falls_back_to_raw_id_when_no_aliases() -> None:
+    cve = _make_pysec_cve(aliases=[])
+    assert _resolve_cve_id(cve) == "PYSEC-2022-43012"
+
+
+def test_resolve_cve_id_pure_cve_id_is_unchanged() -> None:
+    assert _resolve_cve_id(_make_cve()) == "CVE-2023-32681"
+
+
+def test_resolve_cve_id_skips_non_cve_aliases() -> None:
+    cve = _make_pysec_cve(aliases=["GHSA-xxxx-yyyy-zzzz", "CVE-2022-12345"])
+    assert _resolve_cve_id(cve) == "CVE-2022-12345"
+
+
+def test_scan_resolves_pysec_alias_for_threat_intel_fetch(tmp_path: Path) -> None:
+    """fetch_cvss_scores and fetch_epss receive the CVE alias, not the raw PYSEC ID."""
+    (tmp_path / "requirements.txt").write_text("setuptools==65.0.0\n")
+    pysec_cve = _make_pysec_cve()  # id=PYSEC-2022-43012, alias=CVE-2022-40897
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[pysec_cve]),
+        patch("vulntriage.cli.read_stack_context", return_value="setuptools==65.0.0"),
+        patch(
+            "vulntriage.cli.fetch_cvss_scores",
+            return_value={"CVE-2022-40897": "7.5"},
+        ) as mock_nvd,
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch(
+            "vulntriage.cli.fetch_epss",
+            return_value={"CVE-2022-40897": "42.1"},
+        ) as mock_epss,
+        patch(
+            "vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]
+        ) as mock_rank,
+        patch("vulntriage.cli.render_table"),
+    ):
+        runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+
+    # Fetches used the CVE alias
+    assert mock_nvd.call_args.args[0] == ["CVE-2022-40897"]
+    assert mock_epss.call_args.args[0] == ["CVE-2022-40897"]
+
+    # rank_cves received dicts keyed by the raw PYSEC ID
+    kwargs = mock_rank.call_args.kwargs
+    assert kwargs["nvd_scores"] == {"PYSEC-2022-43012": "7.5"}
+    assert kwargs["epss_scores"] == {"PYSEC-2022-43012": "42.1"}
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — CVE deduplication
+# ---------------------------------------------------------------------------
+
+
+def test_scan_deduplicates_duplicate_cve_ids(tmp_path: Path) -> None:
+    """pip-audit can emit the same CVE ID for multiple package records; deduplicate."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    cve = _make_cve()  # id=CVE-2023-32681
+    dup = CVE(
+        id="CVE-2023-32681",  # same id, different package record
+        package="urllib3",
+        installed_version="1.26.0",
+        fix_versions=["2.0.0"],
+        aliases=[],
+        description="Duplicate record",
+    )
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[cve, dup]),
+        patch("vulntriage.cli.read_stack_context", return_value=""),
+        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch("vulntriage.cli.fetch_epss", return_value={}),
+        patch(
+            "vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]
+        ) as mock_rank,
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert "Deduplicated 1" in result.output
+    called_cves: list[CVE] = mock_rank.call_args.args[0]
+    assert len(called_cves) == 1
+    assert called_cves[0].id == "CVE-2023-32681"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — Scan result caching
+# ---------------------------------------------------------------------------
+
+
+def test_scan_cache_hit_skips_run_audit(tmp_path: Path) -> None:
+    """A warm cache skips pip-audit, NVD/EPSS/KEV fetches, and rank_cves entirely."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    cached_results = [_ranked_to_dict(_make_ranked("HIGH"))]
+    with (
+        patch("vulntriage.cli.scan_cache_get", return_value=cached_results),
+        patch("vulntriage.cli.run_audit") as mock_audit,
+        patch("vulntriage.cli.rank_cves") as mock_rank,
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert "cached" in result.output.lower()
+    mock_audit.assert_not_called()
+    mock_rank.assert_not_called()
+    assert result.exit_code == 1  # HIGH risk triggers exit 1
+
+
+def test_no_cache_flag_skips_cache_read(tmp_path: Path) -> None:
+    """--no-cache must not call scan_cache_get; full scan still runs."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.scan_cache_get") as mock_get,
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value=""),
+        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch("vulntriage.cli.fetch_epss", return_value={}),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--no-cache"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    mock_get.assert_not_called()
+
+
+def test_scan_cache_set_called_after_ranking(tmp_path: Path) -> None:
+    """scan_cache_set is called with the scan key and serialised ranked list."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.scan_cache_get", return_value=None),
+        patch("vulntriage.cli.scan_cache_set") as mock_set,
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value=""),
+        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch("vulntriage.cli.fetch_epss", return_value={}),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    mock_set.assert_called_once()
+    key, data = mock_set.call_args.args
+    assert key.startswith("scan_")
+    assert isinstance(data, list)
+    assert len(data) == 1
