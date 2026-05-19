@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -27,6 +28,9 @@ except ImportError:
     _ollama_module = None  # type: ignore[assignment]
 
 VALID_RISK_LEVELS = frozenset({"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"})
+
+# Allowlist: pip install + space-separated package specs. Rejects shell operators.
+_FIX_CMD_RE = re.compile(r"^pip install\s+[a-zA-Z0-9._\->=<!\[\],\s]+$")
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4096
@@ -72,7 +76,7 @@ class AnthropicProvider:
     name = f"anthropic ({CLAUDE_MODEL})"
 
     def __init__(self) -> None:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
         if not api_key:
             raise AuthError(
                 "ANTHROPIC_API_KEY is not set. Get a key from https://console.anthropic.com"
@@ -113,7 +117,7 @@ class OpenAIProvider:
             raise ImportError(
                 "openai package is not installed. Run: pip install 'vulntriage[openai]'"
             )
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
         if not api_key:
             raise AuthError(
                 "OPENAI_API_KEY is not set. Get a key from https://platform.openai.com/api-keys"
@@ -150,7 +154,7 @@ class GeminiProvider:
                 "google-genai package is not installed. "
                 "Run: pip install 'vulntriage[gemini]'"
             )
-        api_key = os.environ.get("GOOGLE_API_KEY")
+        api_key = (os.environ.get("GOOGLE_API_KEY") or "").strip()
         if not api_key:
             raise AuthError(
                 "GOOGLE_API_KEY is not set. Get a free key from https://aistudio.google.com/apikey"
@@ -264,7 +268,9 @@ _PROVIDERS: dict[str, type] = {
 
 
 def get_provider(name: str | None = None) -> LLMProvider:
-    provider_name = (name or os.environ.get("VULNTRIAGE_PROVIDER", "anthropic")).lower()
+    provider_name = (
+        (name or os.environ.get("VULNTRIAGE_PROVIDER", "anthropic")).strip().lower()
+    )
     cls = _PROVIDERS.get(provider_name)
     if cls is None:
         valid = ", ".join(sorted(_PROVIDERS))
@@ -305,9 +311,10 @@ def build_prompt(
     cve_list = json.dumps(
         [_cve_to_dict(c, nvd_scores, kev_set, epss_scores) for c in cves], indent=2
     )
+    escaped_stack = html.escape(stack_context)
     return (
         "<stack>\n"
-        f"{stack_context}\n"
+        f"{escaped_stack}\n"
         "</stack>\n\n"
         "<cves>\n"
         f"{cve_list}\n"
@@ -349,6 +356,8 @@ def parse_claude_response(
             raise ParseError(
                 f"Claude response item missing required field: {exc}"
             ) from exc
+        if fix_command and not _FIX_CMD_RE.match(fix_command):
+            fix_command = ""
         if real_risk not in VALID_RISK_LEVELS:
             raise ParseError(f"Claude returned unrecognised risk level: {real_risk!r}")
         cve = cve_by_id.get(item_id)

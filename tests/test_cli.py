@@ -529,3 +529,43 @@ def test_scan_cache_set_called_after_ranking(tmp_path: Path) -> None:
     assert key.startswith("scan_")
     assert isinstance(data, list)
     assert len(data) == 1
+
+
+def test_privacy_warning_shown_for_cloud_provider(tmp_path: Path) -> None:
+    """A note about sending dependency data is shown before cloud LLM calls."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch("vulntriage.cli.fetch_epss", return_value={}),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert "dependency list sent" in result.output
+
+
+def test_privacy_warning_not_shown_offline(tmp_path: Path) -> None:
+    """No privacy warning when --offline flag is set (no cloud calls made)."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch("vulntriage.cli.fetch_epss", return_value={}),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--offline"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert "dependency list sent" not in result.output

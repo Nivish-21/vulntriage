@@ -236,6 +236,13 @@ def scan(
     }
     kev_set = {raw for raw, resolved in _id_map.items() if resolved in _kev_raw}
 
+    if not offline and not provider.name.startswith("ollama"):
+        typer.echo(
+            f"Note: dependency list sent to {provider.name} for CVE ranking. "
+            "Use --offline or VULNTRIAGE_PROVIDER=ollama for local-only analysis.",
+            err=True,
+        )
+
     try:
         with _console.status(f"Ranking {len(cves)} CVE(s) with {provider.name}..."):
             ranked = rank_cves(
