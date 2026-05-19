@@ -180,7 +180,7 @@ def scan(
 
     try:
         with _console.status("Running pip-audit..."):
-            cves = run_audit()
+            cves = run_audit(project_root)
     except AuditError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
