@@ -179,3 +179,19 @@ def test_save_report_creates_output_dir(tmp_path: Path) -> None:
     path = save_report(ranked, {"provider": "openai"}, nested)
     assert nested.is_dir()
     assert path.exists()
+
+
+def test_render_json_swallows_broken_pipe(monkeypatch) -> None:
+    def fake_print(*_args, **_kwargs) -> None:
+        raise BrokenPipeError
+
+    monkeypatch.setattr("builtins.print", fake_print)
+    render_json([_make_ranked("HIGH")])
+
+
+def test_render_json_swallows_broken_pipe_empty_list(monkeypatch) -> None:
+    def fake_print(*_args, **_kwargs) -> None:
+        raise BrokenPipeError
+
+    monkeypatch.setattr("builtins.print", fake_print)
+    render_json([])

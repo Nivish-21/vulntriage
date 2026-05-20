@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from vulntriage.models import RankedCVE, RiskLevel
+from vulntriage.models import RankedCVE, RiskLevel, min_fix_version
 
 RISK_COLOURS: dict[str, str] = {
     "CRITICAL": "bold red",
@@ -45,14 +46,18 @@ def render_table(ranked: list[RankedCVE]) -> None:
     table.add_column("Risk", min_width=8)
     table.add_column("CVSS", style="dim", min_width=5)
     table.add_column("EPSS", style="dim", min_width=6)
+    table.add_column("Min Fix", style="cyan", min_width=10)
     table.add_column("Reasoning", min_width=30)
     table.add_column("Fix", style="green", min_width=25)
     table.add_column("Breaking Changes", style="yellow", min_width=25)
+    table.add_column("Code Changes", style="dim", min_width=25)
     for r in ranked:
         colour = RISK_COLOURS.get(r.real_risk, "white")
         cve_cell = r.cve.id
         if r.kev:
             cve_cell = f"{r.cve.id}\n[bold yellow]★ CISA KEV[/bold yellow]"
+        mfv = min_fix_version(r.cve.fix_versions)
+        min_fix_cell = f">= {mfv}" if mfv else "no fix"
         table.add_row(
             str(r.rank),
             cve_cell,
@@ -60,35 +65,44 @@ def render_table(ranked: list[RankedCVE]) -> None:
             f"[{colour}]{r.real_risk}[/{colour}]",
             escape(r.cvss) if r.cvss else "—",
             escape(r.epss) if r.epss else "—",
+            min_fix_cell,
             escape(r.reasoning),
             escape(r.fix_command),
             escape(r.breaking_changes),
+            escape(r.code_changes),
         )
     console.print(table)
 
 
 def render_json(ranked: list[RankedCVE]) -> None:
-    print(
-        json.dumps(
-            [
-                {
-                    "rank": r.rank,
-                    "id": r.cve.id,
-                    "package": r.cve.package,
-                    "installed_version": r.cve.installed_version,
-                    "real_risk": r.real_risk,
-                    "cvss": r.cvss,
-                    "kev": r.kev,
-                    "epss": r.epss,
-                    "reasoning": r.reasoning,
-                    "fix_command": r.fix_command,
-                    "breaking_changes": r.breaking_changes,
-                }
-                for r in ranked
-            ],
-            indent=2,
-        )
+    payload = json.dumps(
+        [
+            {
+                "rank": r.rank,
+                "id": r.cve.id,
+                "package": r.cve.package,
+                "installed_version": r.cve.installed_version,
+                "min_fix_version": min_fix_version(r.cve.fix_versions) or "",
+                "real_risk": r.real_risk,
+                "cvss": r.cvss,
+                "kev": r.kev,
+                "epss": r.epss,
+                "reasoning": r.reasoning,
+                "fix_command": r.fix_command,
+                "breaking_changes": r.breaking_changes,
+                "code_changes": r.code_changes,
+            }
+            for r in ranked
+        ],
+        indent=2,
     )
+    try:
+        print(payload)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # SIGPIPE handler in cli.py handles this on Unix; this branch covers
+        # Windows (no SIGPIPE) and direct library use without the CLI entry.
+        pass
 
 
 def determine_exit_code(ranked: list[RankedCVE], fail_on: RiskLevel = "HIGH") -> int:
@@ -113,6 +127,7 @@ def save_report(
                 "id": r.cve.id,
                 "package": r.cve.package,
                 "installed_version": r.cve.installed_version,
+                "min_fix_version": min_fix_version(r.cve.fix_versions) or "",
                 "real_risk": r.real_risk,
                 "cvss": r.cvss,
                 "kev": r.kev,
@@ -120,6 +135,7 @@ def save_report(
                 "reasoning": r.reasoning,
                 "fix_command": r.fix_command,
                 "breaking_changes": r.breaking_changes,
+                "code_changes": r.code_changes,
             }
             for r in ranked
         ],

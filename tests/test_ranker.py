@@ -131,13 +131,63 @@ def test_parse_claude_response_invalid_json_raises() -> None:
         parse_claude_response("not json at all", [_make_cve()])
 
 
-def test_parse_claude_response_missing_field_raises() -> None:
+def test_parse_claude_response_trailing_commas_tolerated() -> None:
+    """Models like Gemma emit trailing commas — parser must handle them."""
+    cve = _make_cve()
+    response = (
+        '[{"id": "CVE-2023-32681", "real_risk": "HIGH", "reasoning": "x",'
+        ' "fix_command": "pip install requests>=2.31.0", "cvss": "6.1",'
+        ' "breaking_changes": "none",}]'
+    )
+    ranked = parse_claude_response(response, [cve])
+    assert len(ranked) == 1
+    assert ranked[0].real_risk == "HIGH"
+
+
+def test_parse_claude_response_prose_after_json_tolerated() -> None:
+    """Models like Gemma append prose after the JSON array — parser must strip it."""
+    cve = _make_cve()
+    json_part = (
+        '[{"id": "CVE-2023-32681", "real_risk": "HIGH", "reasoning": "x",'
+        ' "fix_command": "pip install requests>=2.31.0", "cvss": "6.1",'
+        ' "breaking_changes": "none"}]'
+    )
+    response = json_part + "\n\nNote: the above ranking is based on reachability."
+    ranked = parse_claude_response(response, [cve])
+    assert len(ranked) == 1
+    assert ranked[0].real_risk == "HIGH"
+
+
+def test_parse_claude_response_missing_optional_fields_use_defaults() -> None:
+    # fix_command and reasoning are optional — empty defaults, item still ranked.
     response = json.dumps([{"id": "CVE-2023-32681", "real_risk": "HIGH"}])
-    with pytest.raises(ParseError, match="missing required field"):
+    ranked = parse_claude_response(response, [_make_cve()])
+    assert len(ranked) == 1
+    assert ranked[0].real_risk == "HIGH"
+    assert ranked[0].fix_command == ""
+    assert ranked[0].reasoning == ""
+
+
+def test_parse_claude_response_missing_id_skipped() -> None:
+    # Item missing id — skipped, triggers all-dropped error.
+    response = json.dumps(
+        [{"real_risk": "HIGH", "reasoning": "x", "fix_command": "pip install x"}]
+    )
+    with pytest.raises(ParseError, match="no recognised CVE IDs"):
         parse_claude_response(response, [_make_cve()])
 
 
-def test_parse_claude_response_invalid_risk_raises() -> None:
+def test_parse_claude_response_missing_real_risk_skipped() -> None:
+    # Item missing real_risk — skipped, triggers all-dropped error.
+    response = json.dumps(
+        [{"id": "CVE-2023-32681", "reasoning": "x", "fix_command": "pip install x"}]
+    )
+    with pytest.raises(ParseError, match="no recognised CVE IDs"):
+        parse_claude_response(response, [_make_cve()])
+
+
+def test_parse_claude_response_invalid_risk_skipped() -> None:
+    # Item with unrecognised risk level is skipped, triggers all-dropped error.
     response = json.dumps(
         [
             {
@@ -148,8 +198,54 @@ def test_parse_claude_response_invalid_risk_raises() -> None:
             }
         ]
     )
-    with pytest.raises(ParseError, match="unrecognised risk level"):
+    with pytest.raises(ParseError, match="no recognised CVE IDs"):
         parse_claude_response(response, [_make_cve()])
+
+
+def test_parse_claude_response_partial_malformed_item_skipped() -> None:
+    # One good item + one malformed (missing real_risk) — good item survives.
+    cve_a = _make_cve("CVE-2023-32681")
+    cve_b = _make_cve("CVE-2024-99999")
+    response = json.dumps(
+        [
+            {
+                "id": "CVE-2023-32681",
+                "real_risk": "HIGH",
+                "reasoning": "Direct dep.",
+                "fix_command": "pip install requests==2.31.0",
+                "cvss": "6.1",
+                "breaking_changes": "",
+            },
+            {
+                "id": "CVE-2024-99999",
+                # real_risk missing — should be skipped, not abort the batch
+                "reasoning": "x",
+                "fix_command": "pip install x",
+            },
+        ]
+    )
+    ranked = parse_claude_response(response, [cve_a, cve_b])
+    assert len(ranked) == 1
+    assert ranked[0].cve.id == "CVE-2023-32681"
+
+
+def test_parse_claude_response_fix_key_fallback() -> None:
+    # Gemma uses "fix" instead of "fix_command" — should still populate fix_command.
+    response = json.dumps(
+        [
+            {
+                "id": "CVE-2023-32681",
+                "real_risk": "HIGH",
+                "reasoning": "Direct dep.",
+                "fix": "pip install requests==2.31.0",
+                "cvss": "6.1",
+                "breaking_changes": "",
+            }
+        ]
+    )
+    ranked = parse_claude_response(response, [_make_cve()])
+    assert len(ranked) == 1
+    assert ranked[0].fix_command == "pip install requests==2.31.0"
 
 
 # ---------------------------------------------------------------------------

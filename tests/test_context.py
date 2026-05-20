@@ -49,3 +49,73 @@ def test_pyproject_toml_unicode_error_raises(tmp_path: Path) -> None:
     toml_file.write_bytes(b"\xff\xfe invalid utf-8 \x80\x81")
     with pytest.raises(ContextError, match="non-UTF-8"):
         read_stack_context(tmp_path)
+
+
+def test_import_section_included_when_cve_packages_given(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "app.py").write_text("from requests import Session\n")
+    context = read_stack_context(tmp_path, cve_packages=["requests"])
+    assert "Import presence in source:" in context
+    assert "requests: IMPORTED" in context
+    assert "Session" in context
+
+
+def test_import_section_not_found_marks_transitive(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("urllib3==1.26.0\n")
+    (tmp_path / "app.py").write_text("import requests\n")
+    context = read_stack_context(tmp_path, cve_packages=["urllib3"])
+    assert "urllib3: NOT FOUND IN SOURCE" in context
+
+
+def test_no_import_section_when_no_cve_packages(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    context = read_stack_context(tmp_path)
+    assert "Import presence in source:" not in context
+
+
+def test_poetry_dependencies_extracted(tmp_path: Path) -> None:
+    """[tool.poetry.dependencies] with string specs is included."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.11"\n'
+        'requests = "^2.28"\n'
+        'fastapi = ">=0.95"\n'
+    )
+    context = read_stack_context(tmp_path)
+    assert "requests^2.28" in context
+    assert "fastapi>=0.95" in context
+    # python pin is not a runtime dep
+    assert "python^3.11" not in context
+
+
+def test_poetry_dict_spec_extracted(tmp_path: Path) -> None:
+    """[tool.poetry.dependencies] with dict spec uses the version key."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.poetry.dependencies]\n"
+        'django = {version = "^4.2", extras = ["argon2"]}\n'
+    )
+    context = read_stack_context(tmp_path)
+    assert "django^4.2" in context
+
+
+def test_poetry_and_pep621_merged(tmp_path: Path) -> None:
+    """A project with both tables surfaces deps from both."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        'dependencies = ["click>=8.0"]\n'
+        "\n"
+        "[tool.poetry.dependencies]\n"
+        'requests = "^2.28"\n'
+    )
+    context = read_stack_context(tmp_path)
+    assert "click>=8.0" in context
+    assert "requests^2.28" in context
+
+
+def test_poetry_dep_without_version_spec(tmp_path: Path) -> None:
+    """Dict spec with no version key falls back to bare package name."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.poetry.dependencies]\n" 'mypkg = {extras = ["all"]}\n'
+    )
+    context = read_stack_context(tmp_path)
+    assert "mypkg" in context

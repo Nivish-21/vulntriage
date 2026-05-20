@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vulntriage"
-version = "0.7.0"
+version = "0.8.0"
 description = "Rank pip-audit CVEs by real exploitability using Claude AI"
 readme = "README.md"
 license = { text = "MIT" }

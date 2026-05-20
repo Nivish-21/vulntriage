@@ -10,7 +10,7 @@ from typing import Any
 import anthropic
 
 from vulntriage.exceptions import AuditError, AuthError, ParseError
-from vulntriage.models import CVE, LLMProvider, RankedCVE
+from vulntriage.models import CVE, LLMProvider, RankedCVE, min_fix_version
 
 try:
     import openai as _openai_module
@@ -41,14 +41,20 @@ SYSTEM_PROMPT = (
     "by real exploitability in a specific project. "
     "You will receive CVE IDs with package names, versions, and descriptions inside "
     "<cves> tags, and the project's dependency list inside <stack> tags. "
+    "The <stack> section also includes import-presence lines showing which packages "
+    "are actually imported in the source code and which specific symbols are used.\n"
     "Each CVE entry may include threat intelligence fields:\n"
     "  cvss_score — authoritative CVSS v3.1/v3.0 base score from NVD"
     " (empty if unavailable)\n"
     "  kev — true if CISA has confirmed this CVE is actively exploited in the wild\n"
     "  epss_pct — EPSS exploitation probability percentage (e.g. '97.5%')\n"
+    "  min_fix_version — the minimum package version that fixes this CVE\n"
     "Rank each CVE by actual reachability — not raw CVSS score.\n"
     "Rules:\n"
-    "- A transitive dep with no exposed API surface is LOW even if CVSS is 9.8.\n"
+    "- A package marked 'NOT FOUND IN SOURCE' is a transitive dep — rank LOW or INFO "
+    "unless CVSS is critical and kev=true.\n"
+    "- A package marked 'IMPORTED' with specific symbols is a direct dep — use the "
+    "listed symbols to judge which attack vectors are reachable.\n"
     "- A direct dep called at every request boundary is HIGH even if CVSS is 5.0.\n"
     "- kev=true is strong evidence of real-world exploitation — weight it heavily.\n"
     "- High epss_pct (>50%) indicates the community expects exploitation soon.\n"
@@ -68,6 +74,11 @@ SYSTEM_PROMPT = (
     "features, or behaviour differences a developer must verify after "
     "upgrading to the fix version. "
     "If the upgrade is safe and backwards-compatible, say so explicitly.\n"
+    "- code_changes: 1-2 sentences. Given the imported symbols listed in <stack>, "
+    "name specifically which call sites, function signatures, or import paths change "
+    "between installed_version and min_fix_version. If none of the used symbols are "
+    "affected, say so explicitly. If the package is not imported in source, say "
+    "'Package not directly imported — no source changes needed.'\n"
     "Return ONLY a valid JSON array. No markdown fences, no prose."
 )
 
@@ -291,6 +302,7 @@ def _cve_to_dict(
         "package": cve.package,
         "installed_version": cve.installed_version,
         "fix_versions": cve.fix_versions,
+        "min_fix_version": min_fix_version(cve.fix_versions) or "",
     }
     if nvd_scores is not None:
         entry["cvss_score"] = nvd_scores.get(cve.id, "")
@@ -326,7 +338,8 @@ def build_prompt(
         "stack (1-2 sentences)\n"
         '  "fix_command": string — pip install command\n'
         '  "cvss": string — CVSS v3.1 base score (e.g. "9.8") or "N/A"\n'
-        '  "breaking_changes": string — what to verify after upgrading (1 sentence)\n\n'
+        '  "breaking_changes": string — what to verify after upgrading (1 sentence)\n'
+        '  "code_changes": string — which call sites/symbols change (1-2 sentences)\n\n'
         "Order by real_risk descending (CRITICAL first)."
     )
 
@@ -341,25 +354,31 @@ def parse_claude_response(
     cve_by_id = {c.id: c for c in cves}
     block_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", response_text)
     json_str = block_match.group(1).strip() if block_match else response_text.strip()
+    # Extract outermost [...] — strips prose before/after JSON (Gemma, gpt-4o-mini).
+    array_match = re.search(r"\[[\s\S]*\]", json_str)
+    if array_match:
+        json_str = array_match.group(0)
+    # Strip trailing commas before closing braces/brackets (Gemma, llama).
+    json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
     try:
         data: list[dict[str, Any]] = json.loads(json_str)
     except json.JSONDecodeError as exc:
         raise ParseError(f"Could not extract JSON from Claude response: {exc}") from exc
     ranked: list[RankedCVE] = []
     for i, item in enumerate(data, start=1):
-        try:
-            item_id = item["id"]
-            real_risk = item["real_risk"]
-            reasoning = item["reasoning"]
-            fix_command = item["fix_command"]
-        except KeyError as exc:
-            raise ParseError(
-                f"Claude response item missing required field: {exc}"
-            ) from exc
+        # Use .get() for all fields — weaker models (Gemma, llama) occasionally
+        # drop or rename fields on large batches. Skip the item rather than
+        # aborting the whole parse; the final empty-check below catches total failure.
+        item_id = item.get("id")
+        real_risk = item.get("real_risk")
+        if not item_id or not real_risk:
+            continue
+        if real_risk not in VALID_RISK_LEVELS:
+            continue
+        reasoning = item.get("reasoning", "")
+        fix_command = item.get("fix_command") or item.get("fix", "")
         if fix_command and not _FIX_CMD_RE.match(fix_command):
             fix_command = ""
-        if real_risk not in VALID_RISK_LEVELS:
-            raise ParseError(f"Claude returned unrecognised risk level: {real_risk!r}")
         cve = cve_by_id.get(item_id)
         if cve is None:
             continue
@@ -376,6 +395,7 @@ def parse_claude_response(
                 breaking_changes=item.get("breaking_changes", ""),
                 kev=item_id in (kev_set or set()),
                 epss=(epss_scores or {}).get(item_id, ""),
+                code_changes=item.get("code_changes", ""),
             )
         )
     if cves and not ranked:

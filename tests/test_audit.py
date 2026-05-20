@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vulntriage.audit import _AUDIT_TIMEOUT, parse_pip_audit_output, run_audit
+from vulntriage.audit import _AUDIT_TIMEOUT, _merge, parse_pip_audit_output, run_audit
 from vulntriage.exceptions import AuditError, ParseError
 
 
@@ -15,7 +15,7 @@ def test_parse_single_package_single_vuln(pip_audit_json: str) -> None:
     req_cve = next(c for c in cves if c.package == "requests")
     assert req_cve.id == "PYSEC-2023-74"
     assert req_cve.installed_version == "2.28.0"
-    assert req_cve.fix_versions == ["2.31.0"]
+    assert req_cve.fix_versions == ("2.31.0",)
     assert "CVE-2023-32681" in req_cve.aliases
 
 
@@ -153,8 +153,14 @@ def test_run_audit_uses_requirements_txt(tmp_path: Path) -> None:
     mock_result.stdout = b"[]"
     with patch("subprocess.run", return_value=mock_result) as mock_run:
         run_audit(tmp_path)
-    mock_run.assert_called_once_with(
+    assert mock_run.call_count == 2
+    mock_run.assert_any_call(
         ["pip-audit", "-r", str(req), "--format", "json"],
+        capture_output=True,
+        timeout=_AUDIT_TIMEOUT,
+    )
+    mock_run.assert_any_call(
+        ["pip-audit", "--format", "json"],
         capture_output=True,
         timeout=_AUDIT_TIMEOUT,
     )
@@ -167,11 +173,140 @@ def test_run_audit_uses_pyproject_toml(tmp_path: Path) -> None:
     mock_result.stdout = b"[]"
     with patch("subprocess.run", return_value=mock_result) as mock_run:
         run_audit(tmp_path)
-    mock_run.assert_called_once_with(
+    assert mock_run.call_count == 2
+    mock_run.assert_any_call(
         ["pip-audit", "--path", str(tmp_path), "--format", "json"],
         capture_output=True,
         timeout=_AUDIT_TIMEOUT,
     )
+    mock_run.assert_any_call(
+        ["pip-audit", "--format", "json"],
+        capture_output=True,
+        timeout=_AUDIT_TIMEOUT,
+    )
+
+
+def test_merge_env_cves_fill_gap() -> None:
+    """CVEs from bare env scan that aren't in scoped scan appear in merged output."""
+    from vulntriage.models import CVE
+
+    scoped = [
+        CVE(
+            id="CVE-A",
+            package="requests",
+            installed_version="1.0",
+            fix_versions=[],
+            aliases=[],
+            description="",
+        )
+    ]
+    env = [
+        CVE(
+            id="CVE-A",
+            package="requests",
+            installed_version="1.0",
+            fix_versions=[],
+            aliases=[],
+            description="",
+        ),
+        CVE(
+            id="CVE-B",
+            package="pip",
+            installed_version="26.0",
+            fix_versions=[],
+            aliases=[],
+            description="",
+        ),
+    ]
+    merged = _merge(scoped, env)
+    assert len(merged) == 2
+    assert {c.id for c in merged} == {"CVE-A", "CVE-B"}
+
+
+def test_merge_scoped_entry_takes_priority() -> None:
+    """When same CVE ID appears in both, scoped entry is kept."""
+    from vulntriage.models import CVE
+
+    scoped_cve = CVE(
+        id="CVE-A",
+        package="requests",
+        installed_version="1.0",
+        fix_versions=["2.0"],
+        aliases=[],
+        description="scoped",
+    )
+    env_cve = CVE(
+        id="CVE-A",
+        package="requests",
+        installed_version="1.0",
+        fix_versions=[],
+        aliases=[],
+        description="env",
+    )
+    merged = _merge([scoped_cve], [env_cve])
+    assert len(merged) == 1
+    assert merged[0].description == "scoped"
+
+
+def test_run_audit_env_cves_included_with_requirements(tmp_path: Path) -> None:
+    """CVEs from bare env scan are merged when requirements.txt exists."""
+
+    req = tmp_path / "requirements.txt"
+    req.write_text("requests==2.28.0\n")
+
+    scoped_output = json.dumps(
+        [
+            {
+                "name": "requests",
+                "version": "2.28.0",
+                "vulns": [
+                    {
+                        "id": "CVE-A",
+                        "fix_versions": [],
+                        "aliases": [],
+                        "description": "",
+                    }
+                ],
+            }
+        ]
+    ).encode()
+    env_output = json.dumps(
+        [
+            {
+                "name": "requests",
+                "version": "2.28.0",
+                "vulns": [
+                    {
+                        "id": "CVE-A",
+                        "fix_versions": [],
+                        "aliases": [],
+                        "description": "",
+                    }
+                ],
+            },
+            {
+                "name": "pip",
+                "version": "26.0",
+                "vulns": [
+                    {
+                        "id": "CVE-B",
+                        "fix_versions": [],
+                        "aliases": [],
+                        "description": "",
+                    }
+                ],
+            },
+        ]
+    ).encode()
+
+    scoped_result = MagicMock(returncode=1, stdout=scoped_output)
+    env_result = MagicMock(returncode=1, stdout=env_output)
+
+    with patch("subprocess.run", side_effect=[scoped_result, env_result]):
+        cves = run_audit(tmp_path)
+
+    assert {c.id for c in cves} == {"CVE-A", "CVE-B"}
+    assert len(cves) == 2
 
 
 def test_run_audit_non_utf8_stdout(tmp_path: Path) -> None:

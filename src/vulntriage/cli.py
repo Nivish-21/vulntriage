@@ -1,5 +1,7 @@
 import hashlib
 import os
+import signal
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,13 @@ from vulntriage.output import (
     render_table,
     save_report,
 )
+from vulntriage.pypi import fetch_deprecation_info
 from vulntriage.ranker import get_provider, rank_cves
+
+# Restore Unix default for SIGPIPE so piping output to `head -1` or similar
+# closes silently instead of raising BrokenPipeError on stdout flush at exit.
+if sys.platform != "win32":
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 app = typer.Typer(help="Rank pip-audit CVEs by real exploitability using Claude AI.")
 _console = Console(stderr=True)
@@ -52,6 +60,7 @@ def _ranked_to_dict(r: RankedCVE) -> dict[str, Any]:
         "fix_command": r.fix_command,
         "cvss": r.cvss,
         "breaking_changes": r.breaking_changes,
+        "code_changes": r.code_changes,
         "kev": r.kev,
         "epss": r.epss,
         "cve_id": r.cve.id,
@@ -70,8 +79,8 @@ def _ranked_from_dict(d: dict[str, Any]) -> RankedCVE:
             id=d["cve_id"],
             package=d["cve_package"],
             installed_version=d["cve_installed_version"],
-            fix_versions=d["cve_fix_versions"],
-            aliases=d["cve_aliases"],
+            fix_versions=tuple(d["cve_fix_versions"]),
+            aliases=tuple(d["cve_aliases"]),
             description=d["cve_description"],
         ),
         real_risk=d["real_risk"],
@@ -79,9 +88,31 @@ def _ranked_from_dict(d: dict[str, Any]) -> RankedCVE:
         fix_command=d["fix_command"],
         cvss=d["cvss"],
         breaking_changes=d["breaking_changes"],
+        code_changes=d.get("code_changes", ""),
         kev=d["kev"],
         epss=d["epss"],
     )
+
+
+def _print_deprecation_warnings(dep_info: dict[str, dict]) -> None:
+    warnings = []
+    for pkg, info in dep_info.items():
+        if info.get("deprecated"):
+            warnings.append(
+                f"  [bold red]DEPRECATED[/bold red] {pkg} — "
+                "marked 'Development Status :: 7 - Inactive' on PyPI"
+            )
+        elif info.get("unmaintained"):
+            years = info.get("years_since", 0)
+            last = info.get("last_release", "unknown")
+            warnings.append(
+                f"  [yellow]UNMAINTAINED[/yellow] {pkg} — "
+                f"last release {last} ({years:.1f} years ago)"
+            )
+    if warnings:
+        _console.print("\n[bold]Deprecation / Maintenance Warnings:[/bold]")
+        for w in warnings:
+            _console.print(w)
 
 
 @app.callback()
@@ -199,6 +230,14 @@ def scan(
 
     ignored = load_ignores(project_root)
     if ignored:
+        stale = sorted(ignored - {c.id for c in cves})
+        if stale:
+            noun = "entry" if len(stale) == 1 else "entries"
+            typer.echo(
+                f"Warning: {len(stale)} .vulnignore {noun} no longer match any "
+                f"reported CVE: {', '.join(stale)}",
+                err=True,
+            )
         before = len(cves)
         cves = [c for c in cves if c.id not in ignored]
         suppressed = before - len(cves)
@@ -212,8 +251,9 @@ def scan(
             render_table([])
         raise typer.Exit(0)
 
+    cve_packages = list({c.package for c in cves})
     try:
-        stack_context = read_stack_context(project_root)
+        stack_context = read_stack_context(project_root, cve_packages=cve_packages)
     except ContextError as exc:
         typer.echo(f"Warning: {exc}. Proceeding without stack context.", err=True)
         stack_context = ""
@@ -268,10 +308,15 @@ def scan(
 
     scan_cache_set(cache_key, [_ranked_to_dict(r) for r in ranked])
 
+    with _console.status("Checking PyPI maintenance status..."):
+        dep_info = fetch_deprecation_info(cve_packages, offline=offline)
+
     if output_format == "json":
         render_json(ranked)
     else:
         render_table(ranked)
+
+    _print_deprecation_warnings(dep_info)
 
     if output_dir is not None:
         report_path = save_report(

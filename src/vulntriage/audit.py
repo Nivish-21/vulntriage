@@ -29,24 +29,15 @@ def parse_pip_audit_output(raw: str) -> list[CVE]:
                     id=vuln["id"],
                     package=package["name"],
                     installed_version=package["version"],
-                    fix_versions=vuln.get("fix_versions", []),
-                    aliases=vuln.get("aliases", []),
+                    fix_versions=tuple(vuln.get("fix_versions", [])),
+                    aliases=tuple(vuln.get("aliases", [])),
                     description=vuln.get("description", ""),
                 )
             )
     return cves
 
 
-def run_audit(project_root: Path) -> list[CVE]:
-    req = project_root / "requirements.txt"
-    toml = project_root / "pyproject.toml"
-    if req.exists():
-        cmd = ["pip-audit", "-r", str(req), "--format", "json"]
-    elif toml.exists():
-        cmd = ["pip-audit", "--path", str(project_root), "--format", "json"]
-    else:
-        cmd = ["pip-audit", "--format", "json"]
-
+def _run_cmd(cmd: list[str]) -> list[CVE]:
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=_AUDIT_TIMEOUT)
     except FileNotFoundError as exc:
@@ -64,3 +55,31 @@ def run_audit(project_root: Path) -> list[CVE]:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
         raise AuditError(f"pip-audit exited with code {result.returncode}: {stderr}")
     return parse_pip_audit_output(result.stdout.decode("utf-8", errors="replace"))
+
+
+def _merge(scoped: list[CVE], env: list[CVE]) -> list[CVE]:
+    """Merge scoped + full-env results, deduplicating by CVE ID.
+
+    Scoped entries take priority — they carry the correct package context.
+    Full-env entries fill in anything not declared in the project files.
+    """
+    seen = {cve.id for cve in scoped}
+    return scoped + [cve for cve in env if cve.id not in seen]
+
+
+def run_audit(project_root: Path) -> list[CVE]:
+    req = project_root / "requirements.txt"
+    toml = project_root / "pyproject.toml"
+
+    if req.exists():
+        scoped = _run_cmd(["pip-audit", "-r", str(req), "--format", "json"])
+        env = _run_cmd(["pip-audit", "--format", "json"])
+        return _merge(scoped, env)
+    elif toml.exists():
+        scoped = _run_cmd(
+            ["pip-audit", "--path", str(project_root), "--format", "json"]
+        )
+        env = _run_cmd(["pip-audit", "--format", "json"])
+        return _merge(scoped, env)
+    else:
+        return _run_cmd(["pip-audit", "--format", "json"])

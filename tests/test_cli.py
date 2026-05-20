@@ -569,3 +569,46 @@ def test_privacy_warning_not_shown_offline(tmp_path: Path) -> None:
             env={"ANTHROPIC_API_KEY": "test-key"},
         )
     assert "dependency list sent" not in result.output
+
+
+def test_stale_vulnignore_warning_emitted(tmp_path: Path) -> None:
+    """Suppressed IDs that no longer match any CVE produce a stderr warning."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / ".vulnignore").write_text("CVE-2023-32681\nCVE-1999-0000 long-gone\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch("vulntriage.cli.fetch_epss", return_value={}),
+        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert "CVE-1999-0000" in result.output
+    assert "no longer match" in result.output
+
+
+def test_stale_vulnignore_no_warning_when_all_match(tmp_path: Path) -> None:
+    """No stale warning when every .vulnignore ID still maps to a reported CVE."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / ".vulnignore").write_text("CVE-2023-32681\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_kev", return_value=set()),
+        patch("vulntriage.cli.fetch_epss", return_value={}),
+        patch("vulntriage.cli.rank_cves", return_value=[]),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert "no longer match" not in result.output

@@ -15,4 +15,4 @@ class ContextError(VulnTriageError):
 
 
 class AuthError(VulnTriageError):
-    """Invalid or expired Anthropic API key."""
+    """Invalid or expired API key for the configured LLM provider."""
