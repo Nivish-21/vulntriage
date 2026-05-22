@@ -25,7 +25,7 @@ from vulntriage.output import (
     save_report,
 )
 from vulntriage.pypi import fetch_deprecation_info
-from vulntriage.ranker import get_provider, rank_cves
+from vulntriage.ranker import get_provider, rank_cves_batched
 from vulntriage.sarif import render_sarif
 
 _VALID_FORMATS: frozenset[str] = frozenset({"table", "json", "sarif"})
@@ -182,6 +182,14 @@ def scan(
         "--no-cache",
         help="Skip scan result cache; always run a fresh scan.",
     ),
+    batch_size: int = typer.Option(
+        -1,
+        "--batch-size",
+        help=(
+            "Max CVEs per LLM call. -1 = auto (10 for ollama, unlimited for others). "
+            "0 = unlimited. Use for local models with limited context windows."
+        ),
+    ),
 ) -> None:
     """Run pip-audit and rank CVEs by real risk using Claude."""
     fail_on_upper = fail_on.upper()
@@ -327,16 +335,34 @@ def scan(
             err=True,
         )
 
+    effective_batch = (
+        batch_size
+        if batch_size >= 0
+        else (10 if provider.name.startswith("ollama") else 0)
+    )
+
+    def _progress(current: int, total: int, size: int) -> None:
+        typer.echo(
+            f"  Ranking batch {current}/{total} ({size} CVE(s))...",
+            err=True,
+        )
+
     try:
-        with _console.status(f"Ranking {len(cves)} CVE(s) with {provider.name}..."):
-            ranked = rank_cves(
-                cves,
-                stack_context,
-                provider=provider,
-                nvd_data=nvd_data,
-                kev_set=kev_set,
-                epss_scores=epss_scores,
-            )
+        typer.echo(f"Ranking {len(cves)} CVE(s) with {provider.name}...", err=True)
+        ranked = rank_cves_batched(
+            cves,
+            stack_context,
+            provider=provider,
+            batch_size=effective_batch,
+            nvd_data=nvd_data,
+            kev_set=kev_set,
+            epss_scores=epss_scores,
+            progress_callback=(
+                _progress
+                if effective_batch > 0 and len(cves) > effective_batch
+                else None
+            ),
+        )
     except AuthError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)

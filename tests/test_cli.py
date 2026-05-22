@@ -70,7 +70,7 @@ def test_scan_exits_1_on_high_risk(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -86,7 +86,7 @@ def test_scan_exits_0_on_low_risk(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -101,7 +101,7 @@ def test_scan_continues_on_context_error(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", side_effect=ContextError("no file")),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -117,7 +117,7 @@ def test_scan_exits_1_on_parse_error(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", side_effect=ParseError("bad json")),
+        patch("vulntriage.cli.rank_cves_batched", side_effect=ParseError("bad json")),
     ):
         result = runner.invoke(
             app,
@@ -134,7 +134,7 @@ def test_scan_exits_1_on_auth_error(tmp_path: Path) -> None:
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
         patch(
-            "vulntriage.cli.rank_cves",
+            "vulntriage.cli.rank_cves_batched",
             side_effect=AuthError("Invalid or expired Anthropic API key."),
         ),
     ):
@@ -163,7 +163,9 @@ def test_fail_on_medium_exits_1_on_medium_risk(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("MEDIUM")]),
+        patch(
+            "vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("MEDIUM")]
+        ),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -179,7 +181,7 @@ def test_fail_on_critical_exits_0_on_high_risk(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -196,7 +198,7 @@ def test_format_json_calls_render_json(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=ranked),
+        patch("vulntriage.cli.rank_cves_batched", return_value=ranked),
         patch("vulntriage.cli.render_json") as mock_json,
         patch("vulntriage.cli.render_table") as mock_table,
     ):
@@ -229,7 +231,7 @@ def test_vulnignore_suppresses_cve(tmp_path: Path) -> None:
     (tmp_path / ".vulnignore").write_text("CVE-2023-32681 accepted\n")
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
-        patch("vulntriage.cli.rank_cves") as mock_rank,
+        patch("vulntriage.cli.rank_cves_batched") as mock_rank,
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -246,7 +248,7 @@ def test_vulnignore_missing_file_does_not_error(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -272,7 +274,7 @@ def test_scan_accepts_lowercase_fail_on(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -297,7 +299,7 @@ def test_scan_warns_on_dropped_cves(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[cve1, cve2]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -314,7 +316,7 @@ def test_output_dir_calls_save_report(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]),
         patch("vulntriage.cli.render_table"),
         patch(
             "vulntriage.cli.save_report", return_value=out_dir / "vulntriage-test.json"
@@ -335,7 +337,7 @@ def test_no_output_dir_does_not_call_save_report(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]),
         patch("vulntriage.cli.render_table"),
         patch("vulntriage.cli.save_report") as mock_save,
     ):
@@ -399,7 +401,7 @@ def test_scan_resolves_pysec_alias_for_threat_intel_fetch(tmp_path: Path) -> Non
             return_value={"CVE-2022-40897": "42.1"},
         ) as mock_epss,
         patch(
-            "vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]
+            "vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]
         ) as mock_rank,
         patch("vulntriage.cli.render_table"),
     ):
@@ -443,7 +445,7 @@ def test_scan_deduplicates_duplicate_cve_ids(tmp_path: Path) -> None:
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch(
-            "vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]
+            "vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]
         ) as mock_rank,
         patch("vulntriage.cli.render_table"),
     ):
@@ -470,7 +472,7 @@ def test_scan_cache_hit_skips_run_audit(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.scan_cache_get", return_value=cached_results),
         patch("vulntriage.cli.run_audit") as mock_audit,
-        patch("vulntriage.cli.rank_cves") as mock_rank,
+        patch("vulntriage.cli.rank_cves_batched") as mock_rank,
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -494,7 +496,7 @@ def test_no_cache_flag_skips_cache_read(tmp_path: Path) -> None:
         patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]),
         patch("vulntriage.cli.render_table"),
     ):
         runner.invoke(
@@ -516,7 +518,7 @@ def test_scan_cache_set_called_after_ranking(tmp_path: Path) -> None:
         patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("LOW")]),
         patch("vulntriage.cli.render_table"),
     ):
         runner.invoke(
@@ -540,7 +542,7 @@ def test_privacy_warning_shown_for_cloud_provider(tmp_path: Path) -> None:
         patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -560,7 +562,7 @@ def test_privacy_warning_not_shown_offline(tmp_path: Path) -> None:
         patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -581,7 +583,7 @@ def test_stale_vulnignore_warning_emitted(tmp_path: Path) -> None:
         patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
-        patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("HIGH")]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -603,7 +605,7 @@ def test_stale_vulnignore_no_warning_when_all_match(tmp_path: Path) -> None:
         patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
-        patch("vulntriage.cli.rank_cves", return_value=[]),
+        patch("vulntriage.cli.rank_cves_batched", return_value=[]),
         patch("vulntriage.cli.render_table"),
     ):
         result = runner.invoke(
@@ -680,7 +682,7 @@ def test_airgap_implies_offline(monkeypatch: pytest.MonkeyPatch) -> None:
                         with patch("vulntriage.cli.fetch_kev", return_value=set()):
                             with patch("vulntriage.cli.fetch_epss", return_value={}):
                                 with patch(
-                                    "vulntriage.cli.rank_cves",
+                                    "vulntriage.cli.rank_cves_batched",
                                     return_value=[_make_ranked()],
                                 ):
                                     with patch(
@@ -689,3 +691,88 @@ def test_airgap_implies_offline(monkeypatch: pytest.MonkeyPatch) -> None:
                                     ):
                                         runner.invoke(app, ["scan", "--airgap"])
     assert seen.get("offline") is True
+
+
+# ---------------------------------------------------------------------------
+# --batch-size flag and auto-detect
+# ---------------------------------------------------------------------------
+
+
+def _invoke_scan_with_batch(
+    tmp_path: Path,
+    extra_args: list[str],
+    provider_name: str = "anthropic",
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> tuple[MagicMock, object]:
+    """Helper: run scan with mocked deps and return (rank_mock, result)."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with patch("vulntriage.cli.get_provider") as gp:
+        provider_mock = MagicMock()
+        provider_mock.name = provider_name
+        gp.return_value = provider_mock
+        with patch("vulntriage.cli.run_audit", return_value=[_make_cve()]):
+            with patch("vulntriage.cli.read_stack_context", return_value="stack"):
+                with patch("vulntriage.cli.load_ignores", return_value=set()):
+                    with patch("vulntriage.cli.fetch_cvss_data", return_value={}):
+                        with patch("vulntriage.cli.fetch_kev", return_value=set()):
+                            with patch("vulntriage.cli.fetch_epss", return_value={}):
+                                with patch(
+                                    "vulntriage.cli.rank_cves_batched",
+                                    return_value=[_make_ranked("LOW")],
+                                ) as rank_mock:
+                                    with patch(
+                                        "vulntriage.cli.fetch_deprecation_info",
+                                        return_value={},
+                                    ):
+                                        result = runner.invoke(
+                                            app,
+                                            ["scan", "--project-root", str(tmp_path)]
+                                            + extra_args,
+                                            env={"ANTHROPIC_API_KEY": "test-key"},
+                                        )
+    return rank_mock, result
+
+
+def test_batch_size_flag_accepted(tmp_path: Path) -> None:
+    rank_mock, result = _invoke_scan_with_batch(tmp_path, ["--batch-size", "5"])
+    assert result.exit_code == 0
+    _, kwargs = rank_mock.call_args
+    assert kwargs["batch_size"] == 5
+
+
+def test_batch_size_auto_detect_ollama(tmp_path: Path) -> None:
+    """When provider is ollama and no --batch-size given, effective batch must be 10."""
+    rank_mock, result = _invoke_scan_with_batch(
+        tmp_path, [], provider_name="ollama/phi4-mini"
+    )
+    assert result.exit_code == 0
+    _, kwargs = rank_mock.call_args
+    assert kwargs["batch_size"] == 10
+
+
+def test_batch_size_auto_detect_non_ollama(tmp_path: Path) -> None:
+    """Non-ollama provider with no --batch-size → unlimited (0)."""
+    rank_mock, result = _invoke_scan_with_batch(tmp_path, [], provider_name="anthropic")
+    assert result.exit_code == 0
+    _, kwargs = rank_mock.call_args
+    assert kwargs["batch_size"] == 0
+
+
+def test_batch_size_explicit_overrides_auto(tmp_path: Path) -> None:
+    """Explicit --batch-size=3 overrides ollama auto-detect."""
+    rank_mock, result = _invoke_scan_with_batch(
+        tmp_path, ["--batch-size", "3"], provider_name="ollama/phi4-mini"
+    )
+    assert result.exit_code == 0
+    _, kwargs = rank_mock.call_args
+    assert kwargs["batch_size"] == 3
+
+
+def test_batch_size_zero_means_unlimited(tmp_path: Path) -> None:
+    """--batch-size=0 passes through as unlimited regardless of provider."""
+    rank_mock, result = _invoke_scan_with_batch(
+        tmp_path, ["--batch-size", "0"], provider_name="ollama/phi4-mini"
+    )
+    assert result.exit_code == 0
+    _, kwargs = rank_mock.call_args
+    assert kwargs["batch_size"] == 0

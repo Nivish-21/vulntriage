@@ -430,3 +430,65 @@ def rank_cves(
     prompt = build_prompt(cves, stack_context, nvd_data, kev_set, epss_scores)
     response_text = provider.complete(SYSTEM_PROMPT, prompt)
     return parse_claude_response(response_text, cves, nvd_data, kev_set, epss_scores)
+
+
+_SEVERITY_ORDER: dict[str, int] = {
+    "CRITICAL": 4,
+    "HIGH": 3,
+    "MEDIUM": 2,
+    "LOW": 1,
+    "INFO": 0,
+}
+
+
+def rank_cves_batched(
+    cves: list[CVE],
+    stack_context: str,
+    provider: LLMProvider | None = None,
+    batch_size: int = 10,
+    nvd_data: dict[str, dict[str, str]] | None = None,
+    kev_set: set[str] | None = None,
+    epss_scores: dict[str, str] | None = None,
+    progress_callback: Any | None = None,
+) -> list[RankedCVE]:
+    """Rank CVEs in batches and merge results sorted by severity.
+
+    Splits `cves` into chunks of `batch_size`, ranks each independently,
+    then merges and re-ranks the full result set by severity descending.
+    Use this for local models (Ollama) that have limited context windows.
+    """
+    if provider is None:
+        provider = get_provider()
+    if batch_size <= 0 or len(cves) <= batch_size:
+        return rank_cves(cves, stack_context, provider, nvd_data, kev_set, epss_scores)
+
+    chunks = [cves[i : i + batch_size] for i in range(0, len(cves), batch_size)]
+    total = len(chunks)
+    merged: list[RankedCVE] = []
+    for i, chunk in enumerate(chunks, start=1):
+        if progress_callback is not None:
+            progress_callback(i, total, len(chunk))
+        batch_ranked = rank_cves(
+            chunk, stack_context, provider, nvd_data, kev_set, epss_scores
+        )
+        merged.extend(batch_ranked)
+
+    # Stable sort: CRITICAL first; within the same tier, preserve batch order.
+    merged.sort(key=lambda r: _SEVERITY_ORDER.get(r.real_risk, 0), reverse=True)
+
+    # Re-number ranks 1..N on the merged list.
+    return [
+        RankedCVE(
+            rank=idx,
+            cve=r.cve,
+            real_risk=r.real_risk,
+            reasoning=r.reasoning,
+            fix_command=r.fix_command,
+            cvss=r.cvss,
+            breaking_changes=r.breaking_changes,
+            code_changes=r.code_changes,
+            kev=r.kev,
+            epss=r.epss,
+        )
+        for idx, r in enumerate(merged, start=1)
+    ]

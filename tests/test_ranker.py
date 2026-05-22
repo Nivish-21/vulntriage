@@ -17,6 +17,7 @@ from vulntriage.ranker import (
     get_provider,
     parse_claude_response,
     rank_cves,
+    rank_cves_batched,
 )
 
 
@@ -917,3 +918,192 @@ def test_parse_claude_response_empty_fix_command_preserved() -> None:
     )
     ranked = parse_claude_response(response, [cve])
     assert ranked[0].fix_command == ""
+
+
+# ---------------------------------------------------------------------------
+# rank_cves_batched — batching and merge logic
+# ---------------------------------------------------------------------------
+
+
+def _make_ranked_cve(
+    cve_id: str = "CVE-2023-32681",
+    risk: str = "HIGH",
+    rank: int = 1,
+) -> object:
+    from vulntriage.models import RankedCVE
+
+    return RankedCVE(
+        rank=rank,
+        cve=_make_cve(cve_id),
+        real_risk=risk,
+        reasoning="test",
+        fix_command="pip install --upgrade requests",
+        cvss="7.5",
+        breaking_changes="None.",
+        code_changes="",
+        kev=False,
+        epss="",
+    )
+
+
+def test_batched_small_list_no_batching() -> None:
+    """When CVE count <= batch_size, rank_cves is called once directly."""
+    cves = [_make_cve(f"CVE-2023-{i:05d}") for i in range(3)]
+    provider = MagicMock()
+    provider.name = "anthropic"
+
+    with patch("vulntriage.ranker.rank_cves", return_value=[]) as mock_rank:
+        rank_cves_batched(cves, "stack", provider=provider, batch_size=10)
+        mock_rank.assert_called_once()
+
+
+def test_batched_splits_correctly() -> None:
+    """12 CVEs with batch_size=5 → 3 calls (5, 5, 2)."""
+    cves = [_make_cve(f"CVE-2023-{i:05d}") for i in range(12)]
+    provider = MagicMock()
+    provider.name = "anthropic"
+
+    call_sizes: list[int] = []
+
+    def fake_rank(chunk, stack, prov, nvd, kev, epss):  # type: ignore[no-untyped-def]
+        call_sizes.append(len(chunk))
+        return []
+
+    with patch("vulntriage.ranker.rank_cves", side_effect=fake_rank):
+        rank_cves_batched(cves, "stack", provider=provider, batch_size=5)
+
+    assert call_sizes == [5, 5, 2]
+
+
+def test_batched_merges_and_sorts_by_severity() -> None:
+    """Merged results are sorted CRITICAL > HIGH > MEDIUM regardless of batch order."""
+    from vulntriage.models import RankedCVE
+
+    cve_a = _make_cve("CVE-2023-00001")
+    cve_b = _make_cve("CVE-2023-00002")
+    cve_c = _make_cve("CVE-2023-00003")
+
+    def fake_rank(chunk, stack, prov, nvd, kev, epss):  # type: ignore[no-untyped-def]
+        mapping = {
+            "CVE-2023-00001": "MEDIUM",
+            "CVE-2023-00002": "CRITICAL",
+            "CVE-2023-00003": "HIGH",
+        }
+        return [
+            RankedCVE(
+                rank=1,
+                cve=c,
+                real_risk=mapping[c.id],
+                reasoning="r",
+                fix_command="",
+                cvss="",
+                breaking_changes="",
+                code_changes="",
+                kev=False,
+                epss="",
+            )
+            for c in chunk
+        ]
+
+    provider = MagicMock()
+    provider.name = "anthropic"
+
+    with patch("vulntriage.ranker.rank_cves", side_effect=fake_rank):
+        result = rank_cves_batched(
+            [cve_a, cve_b, cve_c], "stack", provider=provider, batch_size=2
+        )
+
+    assert [r.real_risk for r in result] == ["CRITICAL", "HIGH", "MEDIUM"]
+
+
+def test_batched_renumbers_ranks() -> None:
+    """Merged list is re-numbered 1..N regardless of per-batch ranks."""
+    from vulntriage.models import RankedCVE
+
+    cves = [_make_cve(f"CVE-2023-{i:05d}") for i in range(4)]
+
+    def fake_rank(chunk, stack, prov, nvd, kev, epss):  # type: ignore[no-untyped-def]
+        return [
+            RankedCVE(
+                rank=99,
+                cve=c,
+                real_risk="LOW",
+                reasoning="r",
+                fix_command="",
+                cvss="",
+                breaking_changes="",
+                code_changes="",
+                kev=False,
+                epss="",
+            )
+            for c in chunk
+        ]
+
+    provider = MagicMock()
+    provider.name = "anthropic"
+
+    with patch("vulntriage.ranker.rank_cves", side_effect=fake_rank):
+        result = rank_cves_batched(cves, "stack", provider=provider, batch_size=2)
+
+    assert [r.rank for r in result] == [1, 2, 3, 4]
+
+
+def test_batched_progress_callback_called() -> None:
+    """Progress callback is called once per batch with correct args."""
+    cves = [_make_cve(f"CVE-2023-{i:05d}") for i in range(6)]
+    calls: list[tuple[int, int, int]] = []
+
+    def cb(current: int, total: int, size: int) -> None:
+        calls.append((current, total, size))
+
+    provider = MagicMock()
+    provider.name = "anthropic"
+
+    with patch("vulntriage.ranker.rank_cves", return_value=[]):
+        rank_cves_batched(
+            cves, "stack", provider=provider, batch_size=2, progress_callback=cb
+        )
+
+    assert calls == [(1, 3, 2), (2, 3, 2), (3, 3, 2)]
+
+
+def test_batched_zero_batch_size_no_split() -> None:
+    """batch_size=0 disables batching (single call)."""
+    cves = [_make_cve(f"CVE-2023-{i:05d}") for i in range(5)]
+    provider = MagicMock()
+    provider.name = "anthropic"
+
+    with patch("vulntriage.ranker.rank_cves", return_value=[]) as mock_rank:
+        rank_cves_batched(cves, "stack", provider=provider, batch_size=0)
+        mock_rank.assert_called_once()
+
+
+def test_batched_preserves_code_changes_field() -> None:
+    """Re-ranking must not drop the code_changes field on RankedCVE."""
+    from vulntriage.models import RankedCVE
+
+    cve = _make_cve()
+
+    def fake_rank(chunk, stack, prov, nvd, kev, epss):  # type: ignore[no-untyped-def]
+        return [
+            RankedCVE(
+                rank=1,
+                cve=cve,
+                real_risk="HIGH",
+                reasoning="r",
+                fix_command="",
+                cvss="",
+                breaking_changes="",
+                code_changes="Use safe_load instead of load",
+                kev=False,
+                epss="",
+            )
+        ]
+
+    provider = MagicMock()
+    provider.name = "anthropic"
+
+    with patch("vulntriage.ranker.rank_cves", side_effect=fake_rank):
+        result = rank_cves_batched([cve], "stack", provider=provider, batch_size=10)
+
+    assert result[0].code_changes == "Use safe_load instead of load"
