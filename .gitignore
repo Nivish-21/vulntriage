@@ -31,5 +31,20 @@ htmlcov/
 
 # Internal / project-management artifacts — do not ship
 CLAUDE.md
+CLAUDE.md.bak
 project.md
 docs/
+
+# Claude Code / ruflo / swarm session artifacts
+.claude/
+.claude.bak/
+.claude-flow/
+.swarm/
+.mcp.json
+ruvector.db
+*.db-shm
+*.db-wal
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
