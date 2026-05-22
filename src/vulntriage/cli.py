@@ -16,7 +16,7 @@ from vulntriage.exceptions import AuditError, AuthError, ContextError, ParseErro
 from vulntriage.ignore import load_ignores
 from vulntriage.kev import fetch_kev
 from vulntriage.models import CVE, RankedCVE
-from vulntriage.nvd import fetch_cvss_scores
+from vulntriage.nvd import fetch_cvss_data
 from vulntriage.output import (
     SEVERITY,
     determine_exit_code,
@@ -265,12 +265,15 @@ def scan(
     nvd_api_key: str | None = os.environ.get("NVD_API_KEY") or None
 
     with _console.status("Fetching threat intelligence (NVD, KEV, EPSS)..."):
-        _nvd_raw = fetch_cvss_scores(resolved_ids, api_key=nvd_api_key, offline=offline)
+        _nvd_raw = fetch_cvss_data(resolved_ids, api_key=nvd_api_key, offline=offline)
         _kev_raw = fetch_kev(offline=offline)
         _epss_raw = fetch_epss(resolved_ids, offline=offline)
 
     # Remap to raw cve.id keys so ranker lookups work correctly.
-    nvd_scores = {raw: _nvd_raw.get(resolved, "") for raw, resolved in _id_map.items()}
+    nvd_data = {
+        raw: _nvd_raw.get(resolved, {"score": "", "vector": ""})
+        for raw, resolved in _id_map.items()
+    }
     epss_scores = {
         raw: _epss_raw.get(resolved, "") for raw, resolved in _id_map.items()
     }
@@ -289,7 +292,7 @@ def scan(
                 cves,
                 stack_context,
                 provider=provider,
-                nvd_scores=nvd_scores,
+                nvd_data=nvd_data,
                 kev_set=kev_set,
                 epss_scores=epss_scores,
             )

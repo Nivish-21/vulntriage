@@ -636,12 +636,20 @@ def test_rank_cves_passes_system_and_prompt_to_provider() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_prompt_includes_cvss_score_when_nvd_scores_provided() -> None:
+def test_build_prompt_includes_cvss_score_when_nvd_data_provided() -> None:
     cve = _make_cve()
-    nvd_scores = {"CVE-2023-32681": "9.8"}
-    prompt = build_prompt([cve], "stack", nvd_scores=nvd_scores)
+    nvd_data = {"CVE-2023-32681": {"score": "9.8", "vector": "N"}}
+    prompt = build_prompt([cve], "stack", nvd_data=nvd_data)
     assert "cvss_score" in prompt
     assert "9.8" in prompt
+
+
+def test_build_prompt_includes_attack_vector_when_nvd_data_provided() -> None:
+    cve = _make_cve()
+    nvd_data = {"CVE-2023-32681": {"score": "9.8", "vector": "N"}}
+    prompt = build_prompt([cve], "stack", nvd_data=nvd_data)
+    data = json.loads(prompt.split("<cves>")[1].split("</cves>")[0].strip())
+    assert data[0]["attack_vector"] == "N"
 
 
 def test_build_prompt_includes_kev_true_when_in_kev_set() -> None:
@@ -685,8 +693,8 @@ def test_build_prompt_omits_intel_fields_when_not_provided() -> None:
 def test_parse_claude_response_nvd_overrides_llm_cvss() -> None:
     cve = _make_cve()
     # LLM returns cvss "6.1"; NVD authoritative score is "9.8"
-    nvd_scores = {"CVE-2023-32681": "9.8"}
-    ranked = parse_claude_response(_fake_response(), [cve], nvd_scores=nvd_scores)
+    nvd_data = {"CVE-2023-32681": {"score": "9.8", "vector": "N"}}
+    ranked = parse_claude_response(_fake_response(), [cve], nvd_data=nvd_data)
     assert ranked[0].cvss == "9.8"
 
 
@@ -732,14 +740,14 @@ def test_rank_cves_passes_intel_to_provider_prompt() -> None:
     cve = _make_cve()
     mock_provider = MagicMock()
     mock_provider.complete.return_value = _fake_response()
-    nvd_scores = {"CVE-2023-32681": "9.8"}
+    nvd_data = {"CVE-2023-32681": {"score": "9.8", "vector": "N"}}
     kev_set = {"CVE-2023-32681"}
     epss_scores = {"CVE-2023-32681": "97.5%"}
     rank_cves(
         [cve],
         "stack",
         provider=mock_provider,
-        nvd_scores=nvd_scores,
+        nvd_data=nvd_data,
         kev_set=kev_set,
         epss_scores=epss_scores,
     )
@@ -752,14 +760,14 @@ def test_rank_cves_intel_overrides_applied_to_result() -> None:
     cve = _make_cve()
     mock_provider = MagicMock()
     mock_provider.complete.return_value = _fake_response()
-    nvd_scores = {"CVE-2023-32681": "9.8"}
+    nvd_data = {"CVE-2023-32681": {"score": "9.8", "vector": "N"}}
     kev_set = {"CVE-2023-32681"}
     epss_scores = {"CVE-2023-32681": "97.5%"}
     ranked = rank_cves(
         [cve],
         "stack",
         provider=mock_provider,
-        nvd_scores=nvd_scores,
+        nvd_data=nvd_data,
         kev_set=kev_set,
         epss_scores=epss_scores,
     )

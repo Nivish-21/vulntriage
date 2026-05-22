@@ -5,6 +5,45 @@ from typing import Any
 from vulntriage.exceptions import ContextError
 from vulntriage.importscan import scan_imports
 
+_WEB_FRAMEWORKS = frozenset(
+    {
+        "fastapi",
+        "flask",
+        "django",
+        "starlette",
+        "aiohttp",
+        "sanic",
+        "tornado",
+        "bottle",
+        "falcon",
+        "quart",
+        "pyramid",
+    }
+)
+_CLI_FRAMEWORKS = frozenset({"typer", "click", "argparse", "fire", "docopt"})
+
+
+def _detect_project_type(imported: dict[str, set[str]]) -> str:
+    """Infer project type from top-level imports. Web wins over CLI on ties."""
+    if not imported:
+        return "unknown"
+    if _WEB_FRAMEWORKS & imported.keys():
+        return "web_service"
+    if _CLI_FRAMEWORKS & imported.keys():
+        return "cli"
+    return "library"
+
+
+def _detected_framework(imported: dict[str, set[str]], project_type: str) -> str:
+    """Return the specific framework name detected, for prompt clarity."""
+    if project_type == "web_service":
+        for pkg in sorted(_WEB_FRAMEWORKS & imported.keys()):
+            return pkg
+    if project_type == "cli":
+        for pkg in sorted(_CLI_FRAMEWORKS & imported.keys()):
+            return pkg
+    return ""
+
 
 def _extract_poetry_deps(poetry_table: dict[str, Any]) -> list[str]:
     """Flatten [tool.poetry.dependencies] into requirements-style lines.
@@ -76,8 +115,20 @@ def read_stack_context(
                 f"No requirements.txt or pyproject.toml found in {project_root}"
             )
 
+    imported = scan_imports(project_root)
+    project_type = _detect_project_type(imported)
+    framework = _detected_framework(imported, project_type)
+    type_line = (
+        f"Project type: {project_type} ({framework} detected)"
+        if framework
+        else f"Project type: {project_type}"
+    )
+
     if not cve_packages:
-        return dep_content
+        return f"{dep_content}\n\n{type_line}"
 
     import_section = _build_import_section(project_root, cve_packages)
-    return f"{dep_content}\n\nImport presence in source:\n{import_section}"
+    return (
+        f"{dep_content}\n\n{type_line}\n\n"
+        f"Import presence in source:\n{import_section}"
+    )

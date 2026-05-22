@@ -390,8 +390,8 @@ def test_scan_resolves_pysec_alias_for_threat_intel_fetch(tmp_path: Path) -> Non
         patch("vulntriage.cli.run_audit", return_value=[pysec_cve]),
         patch("vulntriage.cli.read_stack_context", return_value="setuptools==65.0.0"),
         patch(
-            "vulntriage.cli.fetch_cvss_scores",
-            return_value={"CVE-2022-40897": "7.5"},
+            "vulntriage.cli.fetch_cvss_data",
+            return_value={"CVE-2022-40897": {"score": "7.5", "vector": "N"}},
         ) as mock_nvd,
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch(
@@ -415,7 +415,7 @@ def test_scan_resolves_pysec_alias_for_threat_intel_fetch(tmp_path: Path) -> Non
 
     # rank_cves received dicts keyed by the raw PYSEC ID
     kwargs = mock_rank.call_args.kwargs
-    assert kwargs["nvd_scores"] == {"PYSEC-2022-43012": "7.5"}
+    assert kwargs["nvd_data"] == {"PYSEC-2022-43012": {"score": "7.5", "vector": "N"}}
     assert kwargs["epss_scores"] == {"PYSEC-2022-43012": "42.1"}
 
 
@@ -439,7 +439,7 @@ def test_scan_deduplicates_duplicate_cve_ids(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[cve, dup]),
         patch("vulntriage.cli.read_stack_context", return_value=""),
-        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch(
@@ -491,7 +491,7 @@ def test_no_cache_flag_skips_cache_read(tmp_path: Path) -> None:
         patch("vulntriage.cli.scan_cache_get") as mock_get,
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value=""),
-        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
@@ -513,7 +513,7 @@ def test_scan_cache_set_called_after_ranking(tmp_path: Path) -> None:
         patch("vulntriage.cli.scan_cache_set") as mock_set,
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value=""),
-        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("LOW")]),
@@ -537,7 +537,7 @@ def test_privacy_warning_shown_for_cloud_provider(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
@@ -557,7 +557,7 @@ def test_privacy_warning_not_shown_offline(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
@@ -578,7 +578,7 @@ def test_stale_vulnignore_warning_emitted(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch("vulntriage.cli.rank_cves", return_value=[_make_ranked("HIGH")]),
@@ -600,7 +600,7 @@ def test_stale_vulnignore_no_warning_when_all_match(tmp_path: Path) -> None:
     with (
         patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
         patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
-        patch("vulntriage.cli.fetch_cvss_scores", return_value={}),
+        patch("vulntriage.cli.fetch_cvss_data", return_value={}),
         patch("vulntriage.cli.fetch_kev", return_value=set()),
         patch("vulntriage.cli.fetch_epss", return_value={}),
         patch("vulntriage.cli.rank_cves", return_value=[]),

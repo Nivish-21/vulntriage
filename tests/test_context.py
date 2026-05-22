@@ -119,3 +119,48 @@ def test_poetry_dep_without_version_spec(tmp_path: Path) -> None:
     )
     context = read_stack_context(tmp_path)
     assert "mypkg" in context
+
+
+def test_project_type_web_service_detected(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("fastapi==0.104.0\n")
+    (tmp_path / "app.py").write_text("from fastapi import FastAPI\n")
+    context = read_stack_context(tmp_path, cve_packages=["fastapi"])
+    assert "Project type: web_service (fastapi detected)" in context
+
+
+def test_project_type_cli_detected(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("typer==0.12.0\n")
+    (tmp_path / "main.py").write_text("import typer\n")
+    context = read_stack_context(tmp_path, cve_packages=["typer"])
+    assert "Project type: cli (typer detected)" in context
+
+
+def test_project_type_library_when_no_framework(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "lib.py").write_text("import requests\n")
+    context = read_stack_context(tmp_path, cve_packages=["requests"])
+    assert "Project type: library" in context
+
+
+def test_project_type_unknown_when_no_imports(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    context = read_stack_context(tmp_path)
+    assert "Project type: unknown" in context
+
+
+def test_project_type_web_wins_over_cli(tmp_path: Path) -> None:
+    """When both web and CLI frameworks imported, web_service takes precedence."""
+    (tmp_path / "requirements.txt").write_text("fastapi==0.104.0\nclick==8.0\n")
+    (tmp_path / "app.py").write_text("from fastapi import FastAPI\nimport click\n")
+    context = read_stack_context(tmp_path, cve_packages=["fastapi"])
+    assert "web_service" in context
+    assert "cli" not in context.split("Project type:")[1].split("\n")[0]
+
+
+def test_project_type_present_without_cve_packages(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("django==4.2\n")
+    (tmp_path / "app.py").write_text("from django.urls import path\n")
+    context = read_stack_context(tmp_path)
+    assert "Project type: web_service (django detected)" in context
+    # Import section header still gated on cve_packages
+    assert "Import presence in source:" not in context

@@ -43,9 +43,13 @@ SYSTEM_PROMPT = (
     "<cves> tags, and the project's dependency list inside <stack> tags. "
     "The <stack> section also includes import-presence lines showing which packages "
     "are actually imported in the source code and which specific symbols are used.\n"
+    "The <stack> section may also include a 'Project type:' line "
+    "(web_service / cli / library) inferred from imports.\n"
     "Each CVE entry may include threat intelligence fields:\n"
     "  cvss_score — authoritative CVSS v3.1/v3.0 base score from NVD"
     " (empty if unavailable)\n"
+    "  attack_vector — NVD CVSS attack vector: N=Network, A=Adjacent, "
+    "L=Local, P=Physical (empty if unavailable)\n"
     "  kev — true if CISA has confirmed this CVE is actively exploited in the wild\n"
     "  epss_pct — EPSS exploitation probability percentage (e.g. '97.5%')\n"
     "  min_fix_version — the minimum package version that fixes this CVE\n"
@@ -61,6 +65,11 @@ SYSTEM_PROMPT = (
     "- pip, setuptools, and other install/build tools are NOT reachable at "
     "application runtime unless the app explicitly invokes pip at runtime. "
     "Mark them LOW or INFO.\n"
+    "- attack_vector matters: an L (Local) or P (Physical) CVE in a library "
+    "called by a web_service project is almost never reachable from a remote "
+    "attacker; default to LOW. N (Network) CVEs in libraries on the request "
+    "path of a web_service project are high-priority. For cli/library "
+    "projects, weight reachability by what the CLI actually exposes.\n"
     "- Only return IDs that appear in <cves>. Never invent new IDs.\n"
     "- fix_command must be a valid pip install command, nothing else.\n"
     "- reasoning: 1-2 sentences. Name the specific attack type (e.g. RCE via "
@@ -291,7 +300,7 @@ def get_provider(name: str | None = None) -> LLMProvider:
 
 def _cve_to_dict(
     cve: CVE,
-    nvd_scores: dict[str, str] | None = None,
+    nvd_data: dict[str, dict[str, str]] | None = None,
     kev_set: set[str] | None = None,
     epss_scores: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -304,8 +313,10 @@ def _cve_to_dict(
         "fix_versions": cve.fix_versions,
         "min_fix_version": min_fix_version(cve.fix_versions) or "",
     }
-    if nvd_scores is not None:
-        entry["cvss_score"] = nvd_scores.get(cve.id, "")
+    if nvd_data is not None:
+        nvd_entry = nvd_data.get(cve.id, {})
+        entry["cvss_score"] = nvd_entry.get("score", "")
+        entry["attack_vector"] = nvd_entry.get("vector", "")
     if kev_set is not None:
         entry["kev"] = cve.id in kev_set
     if epss_scores is not None:
@@ -316,12 +327,12 @@ def _cve_to_dict(
 def build_prompt(
     cves: list[CVE],
     stack_context: str,
-    nvd_scores: dict[str, str] | None = None,
+    nvd_data: dict[str, dict[str, str]] | None = None,
     kev_set: set[str] | None = None,
     epss_scores: dict[str, str] | None = None,
 ) -> str:
     cve_list = json.dumps(
-        [_cve_to_dict(c, nvd_scores, kev_set, epss_scores) for c in cves], indent=2
+        [_cve_to_dict(c, nvd_data, kev_set, epss_scores) for c in cves], indent=2
     )
     escaped_stack = html.escape(stack_context)
     return (
@@ -347,7 +358,7 @@ def build_prompt(
 def parse_claude_response(
     response_text: str,
     cves: list[CVE],
-    nvd_scores: dict[str, str] | None = None,
+    nvd_data: dict[str, dict[str, str]] | None = None,
     kev_set: set[str] | None = None,
     epss_scores: dict[str, str] | None = None,
 ) -> list[RankedCVE]:
@@ -383,7 +394,7 @@ def parse_claude_response(
         if cve is None:
             continue
         # NVD score is authoritative; override LLM-returned CVSS when available.
-        cvss = (nvd_scores or {}).get(item_id) or item.get("cvss", "")
+        cvss = (nvd_data or {}).get(item_id, {}).get("score") or item.get("cvss", "")
         ranked.append(
             RankedCVE(
                 rank=i,
@@ -410,12 +421,12 @@ def rank_cves(
     cves: list[CVE],
     stack_context: str,
     provider: LLMProvider | None = None,
-    nvd_scores: dict[str, str] | None = None,
+    nvd_data: dict[str, dict[str, str]] | None = None,
     kev_set: set[str] | None = None,
     epss_scores: dict[str, str] | None = None,
 ) -> list[RankedCVE]:
     if provider is None:
         provider = get_provider()
-    prompt = build_prompt(cves, stack_context, nvd_scores, kev_set, epss_scores)
+    prompt = build_prompt(cves, stack_context, nvd_data, kev_set, epss_scores)
     response_text = provider.complete(SYSTEM_PROMPT, prompt)
-    return parse_claude_response(response_text, cves, nvd_scores, kev_set, epss_scores)
+    return parse_claude_response(response_text, cves, nvd_data, kev_set, epss_scores)
