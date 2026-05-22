@@ -612,3 +612,80 @@ def test_stale_vulnignore_no_warning_when_all_match(tmp_path: Path) -> None:
             env={"ANTHROPIC_API_KEY": "test-key"},
         )
     assert "no longer match" not in result.output
+
+
+# --- v0.10.0 --airgap mode ----------------------------------------------------
+
+
+def test_airgap_forces_ollama_when_no_provider_chosen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VULNTRIAGE_PROVIDER", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    captured: dict[str, str] = {}
+
+    def fake_get_provider(name: str | None = None) -> MagicMock:
+        captured["name"] = name or "<none>"
+        p = MagicMock()
+        p.name = "ollama (mocked)"
+        return p
+
+    with patch("vulntriage.cli.get_provider", side_effect=fake_get_provider):
+        with patch("vulntriage.cli.run_audit", side_effect=AuditError("stop here")):
+            result = runner.invoke(app, ["scan", "--airgap"])
+    # We don't care that audit failed — we care that get_provider was called
+    # with 'ollama' explicitly.
+    assert captured.get("name") == "ollama"
+    assert result.exit_code == 1
+
+
+def test_airgap_rejects_anthropic_provider() -> None:
+    result = runner.invoke(
+        app,
+        ["scan", "--airgap"],
+        env={"VULNTRIAGE_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "x"},
+    )
+    assert result.exit_code == 1
+    assert "airgap" in result.output.lower()
+    assert "anthropic" in result.output.lower()
+
+
+def test_airgap_rejects_openai_provider() -> None:
+    result = runner.invoke(
+        app, ["scan", "--airgap"], env={"VULNTRIAGE_PROVIDER": "openai"}
+    )
+    assert result.exit_code == 1
+    assert "airgap" in result.output.lower()
+
+
+def test_airgap_implies_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--airgap must skip NVD/KEV/EPSS fetches even without --offline."""
+    seen: dict[str, bool] = {}
+
+    def fake_fetch_cvss(cve_ids, **kwargs):  # type: ignore[no-untyped-def]
+        seen["offline"] = bool(kwargs.get("offline"))
+        return {}
+
+    with patch("vulntriage.cli.get_provider") as gp:
+        provider_mock = MagicMock()
+        provider_mock.name = "ollama"
+        gp.return_value = provider_mock
+        with patch("vulntriage.cli.run_audit", return_value=[_make_cve()]):
+            with patch("vulntriage.cli.read_stack_context", return_value="stack"):
+                with patch("vulntriage.cli.load_ignores", return_value=set()):
+                    with patch(
+                        "vulntriage.cli.fetch_cvss_data",
+                        side_effect=fake_fetch_cvss,
+                    ):
+                        with patch("vulntriage.cli.fetch_kev", return_value=set()):
+                            with patch("vulntriage.cli.fetch_epss", return_value={}):
+                                with patch(
+                                    "vulntriage.cli.rank_cves",
+                                    return_value=[_make_ranked()],
+                                ):
+                                    with patch(
+                                        "vulntriage.cli.fetch_deprecation_info",
+                                        return_value={},
+                                    ):
+                                        runner.invoke(app, ["scan", "--airgap"])
+    assert seen.get("offline") is True

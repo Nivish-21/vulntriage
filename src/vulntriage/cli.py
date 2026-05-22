@@ -26,6 +26,9 @@ from vulntriage.output import (
 )
 from vulntriage.pypi import fetch_deprecation_info
 from vulntriage.ranker import get_provider, rank_cves
+from vulntriage.sarif import render_sarif
+
+_VALID_FORMATS: frozenset[str] = frozenset({"table", "json", "sarif"})
 
 # Restore Unix default for SIGPIPE so piping output to `head -1` or similar
 # closes silently instead of raising BrokenPipeError on stdout flush at exit.
@@ -94,6 +97,17 @@ def _ranked_from_dict(d: dict[str, Any]) -> RankedCVE:
     )
 
 
+def _dispatch_output(
+    ranked: list[RankedCVE], output_format: str, project_root: Path
+) -> None:
+    if output_format == "json":
+        render_json(ranked)
+    elif output_format == "sarif":
+        render_sarif(ranked, project_root)
+    else:
+        render_table(ranked)
+
+
 def _print_deprecation_warnings(dep_info: dict[str, dict]) -> None:
     warnings = []
     for pkg, info in dep_info.items():
@@ -140,7 +154,7 @@ def scan(
         "table",
         "--format",
         "-f",
-        help="Output format: table (default) or json.",
+        help="Output format: table (default), json, or sarif.",
     ),
     output_dir: Path | None = typer.Option(
         None,
@@ -153,6 +167,15 @@ def scan(
         False,
         "--offline",
         help="Skip all network calls (NVD, CISA KEV, EPSS). Uses cached data only.",
+    ),
+    airgap: bool = typer.Option(
+        False,
+        "--airgap",
+        help=(
+            "Fully offline mode: implies --offline and forces --provider ollama. "
+            "Rejects cloud providers (anthropic/openai/gemini). Requires a local "
+            "Ollama daemon."
+        ),
     ),
     no_cache: bool = typer.Option(
         False,
@@ -170,8 +193,32 @@ def scan(
         )
         raise typer.Exit(1)
 
+    output_format = output_format.lower()
+    if output_format not in _VALID_FORMATS:
+        valid_fmt = "/".join(sorted(_VALID_FORMATS))
+        typer.echo(
+            f"Error: invalid --format value {output_format!r}. "
+            f"Must be one of: {valid_fmt}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    provider_override: str | None = None
+    if airgap:
+        offline = True
+        env_provider = os.environ.get("VULNTRIAGE_PROVIDER", "").strip().lower()
+        if env_provider and env_provider != "ollama":
+            typer.echo(
+                f"Error: --airgap is incompatible with --provider {env_provider!r}. "
+                "Airgap mode requires the local 'ollama' provider. Unset "
+                "VULNTRIAGE_PROVIDER or set it to 'ollama'.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        provider_override = "ollama"
+
     try:
-        provider = get_provider()
+        provider = get_provider(provider_override)
     except (AuthError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -191,10 +238,7 @@ def scan(
         if cached is not None:
             typer.echo("Using cached scan results.", err=True)
             ranked = [_ranked_from_dict(d) for d in cached]
-            if output_format == "json":
-                render_json(ranked)
-            else:
-                render_table(ranked)
+            _dispatch_output(ranked, output_format, project_root)
             if output_dir is not None:
                 report_path = save_report(
                     ranked,
@@ -245,10 +289,7 @@ def scan(
             typer.echo(f"Suppressed {suppressed} CVE(s) via .vulnignore.", err=True)
 
     if not cves:
-        if output_format == "json":
-            render_json([])
-        else:
-            render_table([])
+        _dispatch_output([], output_format, project_root)
         raise typer.Exit(0)
 
     cve_packages = list({c.package for c in cves})
@@ -314,10 +355,7 @@ def scan(
     with _console.status("Checking PyPI maintenance status..."):
         dep_info = fetch_deprecation_info(cve_packages, offline=offline)
 
-    if output_format == "json":
-        render_json(ranked)
-    else:
-        render_table(ranked)
+    _dispatch_output(ranked, output_format, project_root)
 
     _print_deprecation_warnings(dep_info)
 
