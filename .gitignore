@@ -48,3 +48,6 @@ ruvector.db
 # Tool caches
 .ruff_cache/
 .mypy_cache/
+
+# GBrain
+.gbrain-source
