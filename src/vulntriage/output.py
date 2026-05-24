@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from vulntriage.models import RankedCVE, RiskLevel, min_fix_version
+from vulntriage.models import RankedCVE, min_fix_version
 
 RISK_COLOURS: dict[str, str] = {
     "CRITICAL": "bold red",
@@ -24,6 +24,7 @@ SEVERITY: dict[str, int] = {
     "MEDIUM": 2,
     "LOW": 1,
     "INFO": 0,
+    "NONE": 5,
 }
 
 console = Console()
@@ -72,6 +73,11 @@ def render_table(ranked: list[RankedCVE]) -> None:
             escape(r.code_changes),
         )
     console.print(table)
+    if any(not r.cvss for r in ranked):
+        console.print(
+            "[dim]Note: CVSS scores marked '—' are unavailable. "
+            "Run without --offline to fetch authoritative scores from NVD.[/dim]"
+        )
 
 
 def render_json(ranked: list[RankedCVE]) -> None:
@@ -105,7 +111,7 @@ def render_json(ranked: list[RankedCVE]) -> None:
         pass
 
 
-def determine_exit_code(ranked: list[RankedCVE], fail_on: RiskLevel = "HIGH") -> int:
+def determine_exit_code(ranked: list[RankedCVE], fail_on: str = "HIGH") -> int:
     threshold = SEVERITY[fail_on]
     return 1 if any(SEVERITY[r.real_risk] >= threshold for r in ranked) else 0
 

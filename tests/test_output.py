@@ -65,7 +65,11 @@ def test_render_table_empty_prints_no_vulns(capsys: object) -> None:
 def test_render_table_prints_table_for_ranked(capsys: object) -> None:
     with patch("vulntriage.output.console") as mock_console:
         render_table([_make_ranked("HIGH")])
-        mock_console.print.assert_called_once()
+        assert mock_console.print.call_count >= 1
+        first_call_arg = mock_console.print.call_args_list[0][0][0]
+        from rich.table import Table
+
+        assert isinstance(first_call_arg, Table)
 
 
 # --- fail_on threshold tests ---

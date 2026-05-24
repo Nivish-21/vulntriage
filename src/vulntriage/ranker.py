@@ -93,9 +93,9 @@ SYSTEM_PROMPT = (
 
 
 class AnthropicProvider:
-    name = f"anthropic ({CLAUDE_MODEL})"
-
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model or CLAUDE_MODEL
+        self.name = f"anthropic ({self._model})"
         api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
         if not api_key:
             raise AuthError(
@@ -106,7 +106,7 @@ class AnthropicProvider:
     def complete(self, system: str, user: str) -> str:
         try:
             message = self._client.messages.create(
-                model=CLAUDE_MODEL,
+                model=self._model,
                 max_tokens=MAX_TOKENS,
                 system=[
                     {
@@ -130,9 +130,9 @@ OPENAI_MODEL = "gpt-4o-mini"
 
 
 class OpenAIProvider:
-    name = f"openai ({OPENAI_MODEL})"
-
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model or OPENAI_MODEL
+        self.name = f"openai ({self._model})"
         if _openai_module is None:
             raise ImportError(
                 "openai package is not installed. Run: pip install 'vulntriage[openai]'"
@@ -149,7 +149,7 @@ class OpenAIProvider:
     def complete(self, system: str, user: str) -> str:
         try:
             response = self._client.chat.completions.create(
-                model=OPENAI_MODEL,
+                model=self._model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -166,9 +166,9 @@ GEMINI_MODEL = "gemini-2.0-flash"
 
 
 class GeminiProvider:
-    name = f"gemini ({GEMINI_MODEL})"
-
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model or GEMINI_MODEL
+        self.name = f"gemini ({self._model})"
         if _genai_module is None:
             raise ImportError(
                 "google-genai package is not installed. "
@@ -184,7 +184,7 @@ class GeminiProvider:
     def complete(self, system: str, user: str) -> str:
         try:
             response = self._client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=self._model,
                 contents=user,
                 config=_genai_module.types.GenerateContentConfig(
                     system_instruction=system,
@@ -205,13 +205,13 @@ OLLAMA_START_TIMEOUT = 15
 
 
 class OllamaProvider:
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         if _ollama_module is None:
             raise ImportError(
                 "ollama package is not installed. Run: pip install 'vulntriage[ollama]'"
             )
         host = os.environ.get("OLLAMA_HOST", OLLAMA_HOST_DEFAULT)
-        self._model = os.environ.get("OLLAMA_MODEL", OLLAMA_MODEL_DEFAULT)
+        self._model = model or os.environ.get("OLLAMA_MODEL", OLLAMA_MODEL_DEFAULT)
         self.name = f"ollama ({self._model})"
         self._client = _ollama_module.Client(host=host)
         self._server_proc: subprocess.Popen[bytes] | None = None
@@ -287,7 +287,7 @@ _PROVIDERS: dict[str, type] = {
 }
 
 
-def get_provider(name: str | None = None) -> LLMProvider:
+def get_provider(name: str | None = None, model: str | None = None) -> LLMProvider:
     provider_name = (
         (name or os.environ.get("VULNTRIAGE_PROVIDER", "anthropic")).strip().lower()
     )
@@ -295,7 +295,7 @@ def get_provider(name: str | None = None) -> LLMProvider:
     if cls is None:
         valid = ", ".join(sorted(_PROVIDERS))
         raise ValueError(f"Unknown provider: {provider_name!r}. Valid options: {valid}")
-    return cls()
+    return cls(model=model)
 
 
 def _cve_to_dict(
@@ -386,15 +386,16 @@ def parse_claude_response(
             continue
         if real_risk not in VALID_RISK_LEVELS:
             continue
-        reasoning = item.get("reasoning", "")
-        fix_command = item.get("fix_command") or item.get("fix", "")
+        reasoning = item.get("reasoning") or ""
+        fix_command = item.get("fix_command") or item.get("fix") or ""
         if fix_command and not _FIX_CMD_RE.match(fix_command):
             fix_command = ""
         cve = cve_by_id.get(item_id)
         if cve is None:
             continue
         # NVD score is authoritative; override LLM-returned CVSS when available.
-        cvss = (nvd_data or {}).get(item_id, {}).get("score") or item.get("cvss", "")
+        nvd_score = (nvd_data or {}).get(item_id, {}).get("score")
+        cvss = str(nvd_score) if nvd_score is not None else (item.get("cvss") or "")
         ranked.append(
             RankedCVE(
                 rank=i,
@@ -403,10 +404,10 @@ def parse_claude_response(
                 reasoning=reasoning,
                 fix_command=fix_command,
                 cvss=cvss,
-                breaking_changes=item.get("breaking_changes", ""),
+                breaking_changes=item.get("breaking_changes") or "",
                 kev=item_id in (kev_set or set()),
                 epss=(epss_scores or {}).get(item_id, ""),
-                code_changes=item.get("code_changes", ""),
+                code_changes=item.get("code_changes") or "",
             )
         )
     if cves and not ranked:

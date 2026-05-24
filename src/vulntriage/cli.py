@@ -134,6 +134,11 @@ def _root() -> None:
     """vulntriage — CVE triage powered by Claude."""
 
 
+_VALID_PROVIDERS: frozenset[str] = frozenset(
+    {"anthropic", "openai", "gemini", "ollama"}
+)
+
+
 @app.command()
 def scan(
     project_root: Path = typer.Option(
@@ -146,9 +151,12 @@ def scan(
         resolve_path=True,
     ),
     fail_on: str = typer.Option(
-        "HIGH",
+        "none",
         "--fail-on",
-        help="Minimum risk level that triggers exit code 1 (CRITICAL/HIGH/MEDIUM/LOW/INFO).",  # noqa: E501
+        help=(
+            "Minimum risk level that triggers exit code 1 "
+            "(CRITICAL/HIGH/MEDIUM/LOW/INFO/none). Default: none (never fail)."
+        ),
     ),
     output_format: str = typer.Option(
         "table",
@@ -190,6 +198,16 @@ def scan(
             "0 = unlimited. Use for local models with limited context windows."
         ),
     ),
+    provider_flag: str | None = typer.Option(
+        None,
+        "--provider",
+        help="LLM provider: anthropic (default), openai, gemini, ollama.",
+    ),
+    model_flag: str = typer.Option(
+        "",
+        "--model",
+        help="Override the default model for the chosen provider (e.g. llama3.2).",
+    ),
 ) -> None:
     """Run pip-audit and rank CVEs by real risk using Claude."""
     fail_on_upper = fail_on.upper()
@@ -211,22 +229,50 @@ def scan(
         )
         raise typer.Exit(1)
 
-    provider_override: str | None = None
+    # Resolve provider: --provider flag > VULNTRIAGE_PROVIDER env var (deprecated)
+    # > anthropic. Exception: --airgap with no explicit provider auto-selects ollama.
+    env_provider = os.environ.get("VULNTRIAGE_PROVIDER", "").strip().lower()
+    if provider_flag is not None:
+        resolved_provider = provider_flag.strip().lower()
+    elif env_provider:
+        typer.echo(
+            "Deprecation warning: VULNTRIAGE_PROVIDER env var is deprecated. "
+            "Use --provider instead.",
+            err=True,
+        )
+        resolved_provider = env_provider
+    elif airgap:
+        resolved_provider = "ollama"
+    else:
+        resolved_provider = "anthropic"
+
+    if resolved_provider not in _VALID_PROVIDERS:
+        typer.echo(
+            f"Error: invalid --provider value {resolved_provider!r}. "
+            f"Must be one of: {'/'.join(sorted(_VALID_PROVIDERS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Resolve model: --model flag > OLLAMA_MODEL env var (ollama only) > provider
+    # default
+    resolved_model: str | None = model_flag.strip() or None
+    if resolved_model is None and resolved_provider == "ollama":
+        resolved_model = os.environ.get("OLLAMA_MODEL") or None
+
     if airgap:
         offline = True
-        env_provider = os.environ.get("VULNTRIAGE_PROVIDER", "").strip().lower()
-        if env_provider and env_provider != "ollama":
+        if resolved_provider != "ollama":
             typer.echo(
-                f"Error: --airgap is incompatible with --provider {env_provider!r}. "
-                "Airgap mode requires the local 'ollama' provider. Unset "
-                "VULNTRIAGE_PROVIDER or set it to 'ollama'.",
+                f"Error: --airgap is incompatible with --provider "
+                f"{resolved_provider!r}. "
+                "Airgap mode requires the local 'ollama' provider.",
                 err=True,
             )
             raise typer.Exit(1)
-        provider_override = "ollama"
 
     try:
-        provider = get_provider(provider_override)
+        provider = get_provider(name=resolved_provider, model=resolved_model)
     except (AuthError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -331,7 +377,7 @@ def scan(
     if not offline and not provider.name.startswith("ollama"):
         typer.echo(
             f"Note: dependency list sent to {provider.name} for CVE ranking. "
-            "Use --offline or VULNTRIAGE_PROVIDER=ollama for local-only analysis.",
+            "Use --offline or --provider ollama for local-only analysis.",
             err=True,
         )
 

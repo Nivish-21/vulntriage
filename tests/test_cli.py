@@ -75,7 +75,7 @@ def test_scan_exits_1_on_high_risk(tmp_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["scan", "--project-root", str(tmp_path)],
+            ["scan", "--project-root", str(tmp_path), "--fail-on", "high"],
             env={"ANTHROPIC_API_KEY": "test-key"},
         )
     assert result.exit_code == 1
@@ -204,7 +204,15 @@ def test_format_json_calls_render_json(tmp_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["scan", "--project-root", str(tmp_path), "--format", "json"],
+            [
+                "scan",
+                "--project-root",
+                str(tmp_path),
+                "--format",
+                "json",
+                "--fail-on",
+                "high",
+            ],
             env={"ANTHROPIC_API_KEY": "test-key"},
         )
     mock_json.assert_called_once_with(ranked)
@@ -253,7 +261,7 @@ def test_vulnignore_missing_file_does_not_error(tmp_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["scan", "--project-root", str(tmp_path)],
+            ["scan", "--project-root", str(tmp_path), "--fail-on", "high"],
             env={"ANTHROPIC_API_KEY": "test-key"},
         )
     assert result.exit_code == 1
@@ -477,7 +485,7 @@ def test_scan_cache_hit_skips_run_audit(tmp_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["scan", "--project-root", str(tmp_path)],
+            ["scan", "--project-root", str(tmp_path), "--fail-on", "high"],
             env={"ANTHROPIC_API_KEY": "test-key"},
         )
     assert "cached" in result.output.lower()
@@ -626,7 +634,9 @@ def test_airgap_forces_ollama_when_no_provider_chosen(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     captured: dict[str, str] = {}
 
-    def fake_get_provider(name: str | None = None) -> MagicMock:
+    def fake_get_provider(
+        name: str | None = None, model: str | None = None
+    ) -> MagicMock:
         captured["name"] = name or "<none>"
         p = MagicMock()
         p.name = "ollama (mocked)"
@@ -776,3 +786,80 @@ def test_batch_size_zero_means_unlimited(tmp_path: Path) -> None:
     assert result.exit_code == 0
     _, kwargs = rank_mock.call_args
     assert kwargs["batch_size"] == 0
+
+
+# ---------------------------------------------------------------------------
+# v0.12.0 — --fail-on none, --provider/--model flags, deprecation warning
+# ---------------------------------------------------------------------------
+
+
+def test_fail_on_none_never_exits_1(tmp_path: Path) -> None:
+    """--fail-on none must always exit 0 regardless of CVE severity."""
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    with (
+        patch("vulntriage.cli.run_audit", return_value=[_make_cve()]),
+        patch("vulntriage.cli.read_stack_context", return_value="requests==2.28.0"),
+        patch(
+            "vulntriage.cli.rank_cves_batched", return_value=[_make_ranked("CRITICAL")]
+        ),
+        patch("vulntriage.cli.render_table"),
+    ):
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path), "--fail-on", "none"],
+            env={"ANTHROPIC_API_KEY": "test-key"},
+        )
+    assert result.exit_code == 0
+
+
+def test_provider_and_model_flags_passed_to_get_provider(tmp_path: Path) -> None:
+    """--provider and --model flags are forwarded to get_provider."""
+    captured: dict[str, str | None] = {}
+
+    def fake_get_provider(
+        name: str | None = None, model: str | None = None
+    ) -> MagicMock:
+        captured["name"] = name
+        captured["model"] = model
+        p = MagicMock()
+        p.name = f"openai ({model or 'default'})"
+        return p
+
+    with (
+        patch("vulntriage.cli.get_provider", side_effect=fake_get_provider),
+        patch("vulntriage.cli.run_audit", side_effect=AuditError("stop")),
+    ):
+        runner.invoke(
+            app,
+            [
+                "scan",
+                "--project-root",
+                str(tmp_path),
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-4o-mini",
+            ],
+            env={"OPENAI_API_KEY": "test-key"},
+        )
+    assert captured["name"] == "openai"
+    assert captured["model"] == "gpt-4o-mini"
+
+
+def test_vulntriage_provider_env_var_triggers_deprecation(tmp_path: Path) -> None:
+    """VULNTRIAGE_PROVIDER env var without --provider flag emits a deprecation
+    warning."""
+    with (
+        patch("vulntriage.cli.get_provider") as gp,
+        patch("vulntriage.cli.run_audit", side_effect=AuditError("stop")),
+    ):
+        provider_mock = MagicMock()
+        provider_mock.name = "openai (gpt-4o-mini)"
+        gp.return_value = provider_mock
+        result = runner.invoke(
+            app,
+            ["scan", "--project-root", str(tmp_path)],
+            env={"VULNTRIAGE_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"},
+        )
+    assert "deprecated" in result.output.lower()
+    assert "--provider" in result.output
