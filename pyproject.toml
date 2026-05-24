@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vulntriage"
-version = "0.12.1"
+version = "0.12.2"
 description = "Cut CVE alert fatigue — ranks pip-audit output by real exploitability using any LLM provider"
 readme = "README.md"
 license = { text = "MIT" }

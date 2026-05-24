@@ -373,8 +373,19 @@ def parse_claude_response(
     json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
     try:
         data: list[dict[str, Any]] = json.loads(json_str)
-    except json.JSONDecodeError as exc:
-        raise ParseError(f"Could not extract JSON from Claude response: {exc}") from exc
+    except json.JSONDecodeError:
+        # Fallback: quote unquoted object keys at line-start (phi4-mini bare keys).
+        # Only applied after first failure to avoid corrupting valid string values.
+        fixed = re.sub(
+            r"^(\s*)([A-Za-z_]\w*)(\s*:)", r'\1"\2"\3', json_str, flags=re.MULTILINE
+        )
+        try:
+            data = json.loads(fixed)
+        except json.JSONDecodeError as exc:
+            raise ParseError(
+                f"Could not extract JSON from Claude response: {exc}"
+            ) from exc
+    seen_ids: set[str] = set()
     ranked: list[RankedCVE] = []
     for i, item in enumerate(data, start=1):
         # Use .get() for all fields — weaker models (Gemma, llama) occasionally
@@ -386,6 +397,9 @@ def parse_claude_response(
             continue
         if real_risk not in VALID_RISK_LEVELS:
             continue
+        if item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
         reasoning = item.get("reasoning") or ""
         fix_command = item.get("fix_command") or item.get("fix") or ""
         if fix_command and not _FIX_CMD_RE.match(fix_command):

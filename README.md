@@ -51,10 +51,15 @@ vulntriage scan --format json
 | Flag | Default | Description |
 |---|---|---|
 | `--project-root / -p` | `.` | Directory containing `requirements.txt` or `pyproject.toml` |
-| `--fail-on` | `HIGH` | Exit 1 if any CVE at or above this severity: `CRITICAL / HIGH / MEDIUM / LOW / INFO` |
-| `--format / -f` | `table` | Output format: `table` (Rich) or `json` (pipe-safe) |
+| `--provider` | `anthropic` | LLM backend: `anthropic / openai / gemini / ollama` |
+| `--model` | provider default | Model name to use (e.g. `phi4-mini`, `gpt-4o-mini`) |
+| `--fail-on` | `none` | Exit 1 if any CVE at or above this severity: `CRITICAL / HIGH / MEDIUM / LOW / INFO / none` |
+| `--format / -f` | `table` | Output format: `table` (Rich), `json`, or `sarif` |
 | `--output-dir` | — | Save a timestamped JSON report to this directory after each scan |
 | `--offline` | — | Skip all external API calls; use cached threat intel only |
+| `--no-cache` | — | Bypass the 24-hour threat-intel cache and re-fetch from NVD/KEV/EPSS |
+| `--batch-size` | `10` | Max CVEs per LLM call (reduce to ≤10 for local models with small context windows) |
+| `--airgap` | — | Fully air-gapped mode: skip pip-audit network calls and all threat intel fetches |
 
 ---
 
@@ -131,9 +136,9 @@ Lines starting with `#` are comments. Text after the CVE ID is treated as a reas
 
 ## Provider Selection
 
-`vulntriage` supports four LLM backends. Set `VULNTRIAGE_PROVIDER` to switch:
+`vulntriage` supports four LLM backends. Use `--provider` to switch:
 
-| Provider | Env var | Install extra | Default model |
+| Provider | API key env var | Install extra | Default model |
 |---|---|---|---|
 | `anthropic` (default) | `ANTHROPIC_API_KEY` | — | `claude-sonnet-4-6` |
 | `openai` | `OPENAI_API_KEY` | `pip install 'vulntriage[openai]'` | `gpt-4o-mini` |
@@ -142,16 +147,17 @@ Lines starting with `#` are comments. Text after the CVE ID is treated as a reas
 
 ```bash
 # Use Gemini (free tier at aistudio.google.com/apikey)
-export VULNTRIAGE_PROVIDER=gemini
 export GOOGLE_API_KEY="AIza..."
-vulntriage scan
+vulntriage scan --provider gemini
 
 # Use Ollama — fully local, no dependency data leaves your machine
-export VULNTRIAGE_PROVIDER=ollama
-vulntriage scan
+vulntriage scan --provider ollama
+
+# Use a specific model
+vulntriage scan --provider ollama --model phi4-mini
 ```
 
-**Privacy note:** All providers except Ollama send your dependency names to an external API. If your dependency list is sensitive, use `VULNTRIAGE_PROVIDER=ollama`.
+**Privacy note:** All providers except Ollama send your dependency names to an external API. If your dependency list is sensitive, use `--provider ollama`.
 
 ### Ollama quickstart
 
@@ -159,16 +165,16 @@ vulntriage scan
 brew install ollama
 ollama pull llama3.2
 pip install 'vulntriage[ollama]'
-VULNTRIAGE_PROVIDER=ollama vulntriage scan
+vulntriage scan --provider ollama
 ```
 
-By default Ollama connects to `http://localhost:11434`. Override with `OLLAMA_HOST`. Use a different model with `OLLAMA_MODEL` (e.g. `OLLAMA_MODEL=mistral`). If the Ollama server is not running, `vulntriage` will start it automatically.
+By default Ollama connects to `http://localhost:11434`. Override with `OLLAMA_HOST`. If the Ollama server is not running, `vulntriage` will start it automatically.
 
 ---
 
 ## CI Integration
 
-`vulntriage scan` exits **1** if any CVE is ranked at or above `--fail-on` (default: `HIGH`), and **0** otherwise.
+`vulntriage scan` exits **1** if any CVE is ranked at or above `--fail-on` (default: `none`, meaning the scan always exits 0 unless you set a threshold), and **0** otherwise.
 
 ### GitHub Actions
 
