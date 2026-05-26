@@ -1107,3 +1107,10 @@ def test_batched_preserves_code_changes_field() -> None:
         result = rank_cves_batched([cve], "stack", provider=provider, batch_size=10)
 
     assert result[0].code_changes == "Use safe_load instead of load"
+
+
+def test_system_prompt_references_file_line_call_sites() -> None:
+    from vulntriage.ranker import SYSTEM_PROMPT
+
+    assert "file:line" in SYSTEM_PROMPT
+    assert "call sites" in SYSTEM_PROMPT.lower()

@@ -5,7 +5,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vulntriage.audit import _AUDIT_TIMEOUT, _merge, parse_pip_audit_output, run_audit
+from vulntriage.audit import (
+    _AUDIT_TIMEOUT,
+    _BUILD_TOOLS,
+    _merge,
+    parse_pip_audit_output,
+    run_audit,
+)
 from vulntriage.exceptions import AuditError, ParseError
 
 
@@ -249,7 +255,7 @@ def test_merge_scoped_entry_takes_priority() -> None:
 
 
 def test_run_audit_env_cves_included_with_requirements(tmp_path: Path) -> None:
-    """CVEs from bare env scan are merged when requirements.txt exists."""
+    """CVEs from bare env scan are merged; build-tool CVEs (pip) are filtered."""
 
     req = tmp_path / "requirements.txt"
     req.write_text("requests==2.28.0\n")
@@ -305,8 +311,9 @@ def test_run_audit_env_cves_included_with_requirements(tmp_path: Path) -> None:
     with patch("subprocess.run", side_effect=[scoped_result, env_result]):
         cves = run_audit(tmp_path)
 
-    assert {c.id for c in cves} == {"CVE-A", "CVE-B"}
-    assert len(cves) == 2
+    # pip is a build tool — its CVE-B must be filtered out
+    assert {c.id for c in cves} == {"CVE-A"}
+    assert len(cves) == 1
 
 
 def test_run_audit_non_utf8_stdout(tmp_path: Path) -> None:
@@ -317,3 +324,40 @@ def test_run_audit_non_utf8_stdout(tmp_path: Path) -> None:
     with patch("subprocess.run", return_value=mock_result):
         with pytest.raises(ParseError):
             run_audit(tmp_path)
+
+
+def test_build_tools_filtered_from_parse() -> None:
+    """pip, setuptools, wheel CVEs must not appear in parsed output."""
+    raw = json.dumps(
+        [
+            {
+                "name": "pip",
+                "version": "26.0",
+                "vulns": [{"id": "CVE-2026-1234", "fix_versions": [], "aliases": []}],
+            },
+            {
+                "name": "setuptools",
+                "version": "70.0",
+                "vulns": [{"id": "CVE-2026-5678", "fix_versions": [], "aliases": []}],
+            },
+            {
+                "name": "requests",
+                "version": "2.31.0",
+                "vulns": [
+                    {"id": "CVE-2024-35195", "fix_versions": ["2.32.0"], "aliases": []}
+                ],
+            },
+        ]
+    )
+    cves = parse_pip_audit_output(raw)
+    ids = {c.id for c in cves}
+    assert "CVE-2024-35195" in ids
+    assert "CVE-2026-1234" not in ids
+    assert "CVE-2026-5678" not in ids
+
+
+def test_build_tools_frozenset_contains_expected_names() -> None:
+    assert "pip" in _BUILD_TOOLS
+    assert "setuptools" in _BUILD_TOOLS
+    assert "wheel" in _BUILD_TOOLS
+    assert "requests" not in _BUILD_TOOLS

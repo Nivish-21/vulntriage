@@ -164,3 +164,76 @@ def test_project_type_present_without_cve_packages(tmp_path: Path) -> None:
     assert "Project type: web_service (django detected)" in context
     # Import section header still gated on cve_packages
     assert "Import presence in source:" not in context
+
+
+def test_call_site_line_appears_in_import_section(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "app.py").write_text(
+        "import requests\nrequests.get('http://x', verify=False)\n"
+    )
+    context = read_stack_context(tmp_path, cve_packages=["requests"])
+    assert "app.py:2" in context
+    assert "requests.get" in context
+    assert "verify=" in context
+
+
+def test_call_site_indented_two_spaces(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "app.py").write_text("import requests\nrequests.post('/api')\n")
+    context = read_stack_context(tmp_path, cve_packages=["requests"])
+    # call-site lines must start with two spaces
+    call_site_lines = [
+        ln for ln in context.splitlines() if "app.py" in ln and "requests.post" in ln
+    ]
+    assert call_site_lines, "no call-site line found"
+    assert call_site_lines[0].startswith("  ")
+
+
+def test_bare_call_no_kwargs_shows_empty_parens(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "app.py").write_text("import requests\nrequests.head('http://x')\n")
+    context = read_stack_context(tmp_path, cve_packages=["requests"])
+    assert "requests.head()" in context
+
+
+def test_package_without_call_sites_shows_no_extra_lines(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("urllib3==1.26.0\n")
+    (tmp_path / "app.py").write_text("import urllib3\n")
+    context = read_stack_context(tmp_path, cve_packages=["urllib3"])
+    lines = context.splitlines()
+    imported_line = next(ln for ln in lines if "urllib3: IMPORTED" in ln)
+    idx = lines.index(imported_line)
+    # next line (if any) must not be an indented call-site line
+    if idx + 1 < len(lines):
+        assert not lines[idx + 1].startswith("  ")
+
+
+def test_pyjwt_alias_resolved_to_jwt_import(tmp_path: Path) -> None:
+    """pyjwt (pip name) → jwt (import name): call sites must be surfaced."""
+    (tmp_path / "requirements.txt").write_text("PyJWT==1.7.1\n")
+    (tmp_path / "app.py").write_text(
+        "import jwt\njwt.encode({'sub': '1'}, 'secret', algorithm='HS256')\n"
+    )
+    context = read_stack_context(tmp_path, cve_packages=["PyJWT"])
+    assert "IMPORTED as 'jwt'" in context
+    assert "jwt.encode" in context
+
+
+def test_pyjwt_alias_call_sites_shown(tmp_path: Path) -> None:
+    """Call sites under the jwt import name must appear under the PyJWT entry."""
+    (tmp_path / "requirements.txt").write_text("PyJWT==1.7.1\n")
+    (tmp_path / "app.py").write_text(
+        "import jwt\njwt.decode('tok', 'secret', algorithms=['HS256'])\n"
+    )
+    context = read_stack_context(tmp_path, cve_packages=["PyJWT"])
+    assert "app.py:2" in context
+    assert "jwt.decode" in context
+    assert "algorithms=" in context
+
+
+def test_unknown_pip_name_still_shows_not_found(tmp_path: Path) -> None:
+    """A package with no alias and no import shows NOT FOUND."""
+    (tmp_path / "requirements.txt").write_text("some-obscure-lib==1.0\n")
+    (tmp_path / "app.py").write_text("import requests\n")
+    context = read_stack_context(tmp_path, cve_packages=["some-obscure-lib"])
+    assert "NOT FOUND IN SOURCE" in context

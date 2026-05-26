@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from vulntriage.exceptions import ContextError
-from vulntriage.importscan import scan_imports
+from vulntriage.importscan import scan_project
 
 _WEB_FRAMEWORKS = frozenset(
     {
@@ -21,6 +21,24 @@ _WEB_FRAMEWORKS = frozenset(
     }
 )
 _CLI_FRAMEWORKS = frozenset({"typer", "click", "argparse", "fire", "docopt"})
+
+# pip install name → Python import name when they differ
+_PIP_IMPORT_ALIASES: dict[str, str] = {
+    "pyjwt": "jwt",
+    "pillow": "PIL",
+    "beautifulsoup4": "bs4",
+    "scikit-learn": "sklearn",
+    "python-dateutil": "dateutil",
+    "opencv-python": "cv2",
+    "python-dotenv": "dotenv",
+    "mysqlclient": "MySQLdb",
+    "psycopg2-binary": "psycopg2",
+    "pyyaml": "yaml",
+    "pyserial": "serial",
+    "pyzmq": "zmq",
+    "python-magic": "magic",
+    "gitpython": "git",
+}
 
 
 def _detect_project_type(imported: dict[str, set[str]]) -> str:
@@ -66,8 +84,8 @@ def _extract_poetry_deps(poetry_table: dict[str, Any]) -> list[str]:
 
 
 def _build_import_section(project_root: Path, cve_packages: list[str]) -> str:
-    """Return a formatted import-presence block for the LLM stack context."""
-    imported = scan_imports(project_root)
+    """Return a formatted import-presence + call-site block for the LLM stack."""
+    imported, call_sites = scan_project(project_root)
     lines: list[str] = []
     for pkg in cve_packages:
         normalized = pkg.lower().replace("-", "_")
@@ -77,8 +95,41 @@ def _build_import_section(project_root: Path, cve_packages: list[str]) -> str:
                 lines.append(f"{pkg}: IMPORTED — symbols used: {', '.join(symbols)}")
             else:
                 lines.append(f"{pkg}: IMPORTED (bare import, no specific symbols)")
+            for site in call_sites.get(normalized, []):
+                kwargs_str = (
+                    f"({', '.join(k + '=' for k in site['kwargs'])})"
+                    if site["kwargs"]
+                    else "()"
+                )
+                lines.append(
+                    f"  {site['file']}:{site['line']}  {site['func']}{kwargs_str}"
+                )
         else:
-            lines.append(f"{pkg}: NOT FOUND IN SOURCE (likely transitive dep)")
+            # Try pip→import name alias (e.g. pyjwt → jwt)
+            import_name = _PIP_IMPORT_ALIASES.get(normalized, normalized)
+            if import_name != normalized and import_name in imported:
+                symbols = sorted(imported[import_name])
+                if symbols:
+                    lines.append(
+                        f"{pkg}: IMPORTED as '{import_name}'"
+                        f" — symbols used: {', '.join(symbols)}"
+                    )
+                else:
+                    lines.append(
+                        f"{pkg}: IMPORTED as '{import_name}'"
+                        " (bare import, no specific symbols)"
+                    )
+                for site in call_sites.get(import_name, []):
+                    kwargs_str = (
+                        f"({', '.join(k + '=' for k in site['kwargs'])})"
+                        if site["kwargs"]
+                        else "()"
+                    )
+                    lines.append(
+                        f"  {site['file']}:{site['line']}  {site['func']}{kwargs_str}"
+                    )
+            else:
+                lines.append(f"{pkg}: NOT FOUND IN SOURCE (likely transitive dep)")
     return "\n".join(lines)
 
 
@@ -115,7 +166,7 @@ def read_stack_context(
                 f"No requirements.txt or pyproject.toml found in {project_root}"
             )
 
-    imported = scan_imports(project_root)
+    imported, _ = scan_project(project_root)
     project_type = _detect_project_type(imported)
     framework = _detected_framework(imported, project_type)
     type_line = (

@@ -83,13 +83,42 @@ SYSTEM_PROMPT = (
     "features, or behaviour differences a developer must verify after "
     "upgrading to the fix version. "
     "If the upgrade is safe and backwards-compatible, say so explicitly.\n"
-    "- code_changes: 1-2 sentences. Given the imported symbols listed in <stack>, "
-    "name specifically which call sites, function signatures, or import paths change "
-    "between installed_version and min_fix_version. If none of the used symbols are "
-    "affected, say so explicitly. If the package is not imported in source, say "
+    "- code_changes: 1-2 sentences. The <stack> section lists exact call sites as "
+    "'file:line  func(kwarg=, ...)'. Reference those specific locations when "
+    "describing what changes between installed_version and min_fix_version — e.g. "
+    "'src/api.py:42 requests.get() needs verify= kwarg added'. If none of the "
+    "listed call sites are affected by the fix, say so explicitly. If no call sites "
+    "are listed for this package, say "
     "'Package not directly imported — no source changes needed.'\n"
     "Return ONLY a valid JSON array. No markdown fences, no prose."
 )
+
+# Stripped-down prompt for local models (Ollama). Same semantics as SYSTEM_PROMPT
+# but shorter and more explicit about JSON structure — local models follow concrete
+# templates better than long rule lists.
+OLLAMA_SYSTEM_PROMPT = (
+    "You are a CVE ranking tool. Output ONLY a JSON array."
+    " No prose. No markdown fences.\n"
+    "Start your response with [ and end with ].\n\n"
+    "Rules:\n"
+    "- 'NOT FOUND IN SOURCE' means transitive dep"
+    " → real_risk: LOW (unless kev=true)\n"
+    "- 'IMPORTED' with call sites"
+    " → judge reachability from the specific functions listed\n"
+    "- verify=False in requests.get() is HIGH"
+    " if CVE is about certificate validation\n"
+    "- kev=true → weight toward HIGH or CRITICAL\n"
+    "- Only return IDs that appear in <cves>. Never invent new IDs.\n\n"
+    "Each array item must have exactly these 7 keys:\n"
+    '{"id":"CVE-XXXX-YYYY","real_risk":"HIGH",'
+    '"reasoning":"specific attack + reachability",'
+    '"fix_command":"pip install pkg>=X.Y","cvss":"N/A",'
+    '"breaking_changes":"...",'
+    '"code_changes":"file:line func() or Package not directly imported"}\n\n'
+    "real_risk must be exactly one of: CRITICAL HIGH MEDIUM LOW INFO"
+)
+
+OLLAMA_TIMEOUT = 120  # seconds per batch call
 
 
 class AnthropicProvider:
@@ -213,7 +242,7 @@ class OllamaProvider:
         host = os.environ.get("OLLAMA_HOST", OLLAMA_HOST_DEFAULT)
         self._model = model or os.environ.get("OLLAMA_MODEL", OLLAMA_MODEL_DEFAULT)
         self.name = f"ollama ({self._model})"
-        self._client = _ollama_module.Client(host=host)
+        self._client = _ollama_module.Client(host=host, timeout=OLLAMA_TIMEOUT)
         self._server_proc: subprocess.Popen[bytes] | None = None
         if not self._is_server_reachable():
             self._start_ollama_server()
@@ -267,9 +296,12 @@ class OllamaProvider:
         response = self._client.chat(
             model=self._model,
             messages=[
-                {"role": "system", "content": system},
+                # Use the local-model-optimised prompt regardless of what the caller
+                # passes — the full SYSTEM_PROMPT is too long for most local models.
+                {"role": "system", "content": OLLAMA_SYSTEM_PROMPT},
                 {"role": "user", "content": user},
             ],
+            options={"temperature": 0, "num_predict": 2048},
         )
         content = response.message.content
         if not content:
@@ -374,17 +406,28 @@ def parse_claude_response(
     try:
         data: list[dict[str, Any]] = json.loads(json_str)
     except json.JSONDecodeError:
-        # Fallback: quote unquoted object keys at line-start (phi4-mini bare keys).
-        # Only applied after first failure to avoid corrupting valid string values.
+        # Fallback 1: quote unquoted object keys at line-start (phi4-mini bare keys).
         fixed = re.sub(
             r"^(\s*)([A-Za-z_]\w*)(\s*:)", r'\1"\2"\3', json_str, flags=re.MULTILINE
         )
         try:
             data = json.loads(fixed)
-        except json.JSONDecodeError as exc:
-            raise ParseError(
-                f"Could not extract JSON from Claude response: {exc}"
-            ) from exc
+        except json.JSONDecodeError:
+            # Fallback 2: truncated array repair — local models sometimes cut off
+            # mid-object when they hit num_predict. Close the last open object and
+            # the array so we salvage whichever entries completed successfully.
+            truncated = fixed.rstrip().rstrip(",")
+            if not truncated.endswith("]"):
+                if not truncated.endswith("}"):
+                    truncated += "}"
+                truncated += "]"
+                truncated = re.sub(r",\s*([}\]])", r"\1", truncated)
+            try:
+                data = json.loads(truncated)
+            except json.JSONDecodeError as exc:
+                raise ParseError(
+                    f"Could not extract JSON from LLM response: {exc}"
+                ) from exc
     seen_ids: set[str] = set()
     ranked: list[RankedCVE] = []
     for i, item in enumerate(data, start=1):

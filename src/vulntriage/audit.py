@@ -9,6 +9,10 @@ from vulntriage.models import CVE
 
 _AUDIT_TIMEOUT = int(os.environ.get("VULNTRIAGE_AUDIT_TIMEOUT", "120"))
 
+_BUILD_TOOLS: frozenset[str] = frozenset(
+    {"pip", "setuptools", "wheel", "pkg_resources", "distribute"}
+)
+
 
 def parse_pip_audit_output(raw: str) -> list[CVE]:
     try:
@@ -23,6 +27,8 @@ def parse_pip_audit_output(raw: str) -> list[CVE]:
         data = parsed
     cves: list[CVE] = []
     for package in data:
+        if package.get("name", "").lower() in _BUILD_TOOLS:
+            continue
         for vuln in package.get("vulns", []):
             cves.append(
                 CVE(

@@ -384,7 +384,7 @@ def scan(
     effective_batch = (
         batch_size
         if batch_size >= 0
-        else (10 if provider.name.startswith("ollama") else 0)
+        else (3 if provider.name.startswith("ollama") else 0)
     )
 
     def _progress(current: int, total: int, size: int) -> None:

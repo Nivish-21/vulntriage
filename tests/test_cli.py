@@ -751,13 +751,13 @@ def test_batch_size_flag_accepted(tmp_path: Path) -> None:
 
 
 def test_batch_size_auto_detect_ollama(tmp_path: Path) -> None:
-    """When provider is ollama and no --batch-size given, effective batch must be 10."""
+    """When provider is ollama and no --batch-size given, effective batch must be 3."""
     rank_mock, result = _invoke_scan_with_batch(
         tmp_path, [], provider_name="ollama/phi4-mini"
     )
     assert result.exit_code == 0
     _, kwargs = rank_mock.call_args
-    assert kwargs["batch_size"] == 10
+    assert kwargs["batch_size"] == 3
 
 
 def test_batch_size_auto_detect_non_ollama(tmp_path: Path) -> None:
