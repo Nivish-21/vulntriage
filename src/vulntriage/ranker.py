@@ -82,7 +82,7 @@ SYSTEM_PROMPT = (
     "- reasoning: Use this exact structure — "
     "'Attack: [class e.g. RCE via deserialization | path traversal | SSRF]. "
     "Path: [the specific function or call site in <stack> that triggers it, or "
-    "\"no call site listed\" if absent]. "
+    '"no call site listed" if absent]. '
     "Verdict: [REACHABLE | UNLIKELY] — [one clause of evidence].' "
     "Never write generic statements like 'X is used for Y' without naming the "
     "attack vector and the specific code path.\n"
@@ -129,7 +129,7 @@ OLLAMA_SYSTEM_PROMPT = (
     "real_risk must be exactly one of: CRITICAL HIGH MEDIUM LOW INFO"
 )
 
-OLLAMA_TIMEOUT = 120  # seconds per batch call
+OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "300"))
 
 
 class AnthropicProvider:
@@ -312,7 +312,7 @@ class OllamaProvider:
                 {"role": "system", "content": OLLAMA_SYSTEM_PROMPT},
                 {"role": "user", "content": user},
             ],
-            options={"temperature": 0, "num_predict": 2048},
+            options={"temperature": 0, "num_predict": 4096},
         )
         content = response.message.content
         if not content:
@@ -349,6 +349,9 @@ def _cve_to_dict(
 ) -> dict[str, Any]:
     # Omit description and aliases — Claude already knows CVE details from training.
     # Sending them back would add tokens and create a prompt-injection surface.
+    # For PYSEC-* IDs, expose the CVE-* alias so local models (gemma, llama)
+    # that lack PYSEC format training can still return a recognisable ID.
+    cve_alias = next((a for a in cve.aliases if a.startswith("CVE-")), None)
     entry: dict[str, Any] = {
         "id": cve.id,
         "package": cve.package,
@@ -356,6 +359,8 @@ def _cve_to_dict(
         "fix_versions": cve.fix_versions,
         "min_fix_version": min_fix_version(cve.fix_versions) or "",
     }
+    if cve_alias:
+        entry["cve_alias"] = cve_alias
     if nvd_data is not None:
         nvd_entry = nvd_data.get(cve.id, {})
         entry["cvss_score"] = nvd_entry.get("score", "")
@@ -387,7 +392,7 @@ def build_prompt(
         "</cves>\n\n"
         "Return a JSON array ordered by real_risk descending (CRITICAL first).\n"
         "Each item must have exactly these 7 keys:\n"
-        '  "id"               — string, must match an id from <cves>\n'
+        '  "id"               — string, cve_alias if present else id from <cves>\n'
         '  "real_risk"        — one of: CRITICAL HIGH MEDIUM LOW INFO\n'
         '  "reasoning"        — Attack / Path / Verdict structure\n'
         '  "fix_command"      — pip install command\n'
@@ -405,6 +410,10 @@ def parse_claude_response(
     epss_scores: dict[str, str] | None = None,
 ) -> list[RankedCVE]:
     cve_by_id = {c.id: c for c in cves}
+    # Reverse-map CVE-* aliases so models returning alias IDs resolve correctly.
+    alias_to_cve = {
+        alias: c for c in cves for alias in c.aliases if alias.startswith("CVE-")
+    }
     block_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", response_text)
     json_str = block_match.group(1).strip() if block_match else response_text.strip()
     # Extract outermost [...] — strips prose before/after JSON (Gemma, gpt-4o-mini).
@@ -413,6 +422,8 @@ def parse_claude_response(
         json_str = array_match.group(0)
     # Strip trailing commas before closing braces/brackets (Gemma, llama).
     json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
+    # Insert missing commas between adjacent objects (Gemma omits them sometimes).
+    json_str = re.sub(r"}\s*\n\s*{", "},{", json_str)
     try:
         data: list[dict[str, Any]] = json.loads(json_str)
     except json.JSONDecodeError:
@@ -450,18 +461,21 @@ def parse_claude_response(
             continue
         if real_risk not in VALID_RISK_LEVELS:
             continue
-        if item_id in seen_ids:
+        # Resolve by primary ID, then by alias (PYSEC entries returned as CVE-* alias).
+        cve = cve_by_id.get(item_id) or alias_to_cve.get(item_id)
+        if cve is None:
             continue
-        seen_ids.add(item_id)
+        # Dedup by cve.id — a model may return both PYSEC and its CVE alias;
+        # use one RankedCVE per vulnerability.
+        if cve.id in seen_ids:
+            continue
+        seen_ids.add(cve.id)
         reasoning = item.get("reasoning") or ""
         fix_command = item.get("fix_command") or item.get("fix") or ""
         if fix_command and not _FIX_CMD_RE.match(fix_command):
             fix_command = ""
-        cve = cve_by_id.get(item_id)
-        if cve is None:
-            continue
         # NVD score is authoritative; override LLM-returned CVSS when available.
-        nvd_score = (nvd_data or {}).get(item_id, {}).get("score")
+        nvd_score = (nvd_data or {}).get(cve.id, {}).get("score")
         cvss = str(nvd_score) if nvd_score is not None else (item.get("cvss") or "")
         ranked.append(
             RankedCVE(
@@ -472,8 +486,8 @@ def parse_claude_response(
                 fix_command=fix_command,
                 cvss=cvss,
                 breaking_changes=item.get("breaking_changes") or "",
-                kev=item_id in (kev_set or set()),
-                epss=(epss_scores or {}).get(item_id, ""),
+                kev=cve.id in (kev_set or set()),
+                epss=(epss_scores or {}).get(cve.id, ""),
                 code_changes=item.get("code_changes") or "",
             )
         )
@@ -536,9 +550,32 @@ def rank_cves_batched(
     for i, chunk in enumerate(chunks, start=1):
         if progress_callback is not None:
             progress_callback(i, total, len(chunk))
-        batch_ranked = rank_cves(
-            chunk, stack_context, provider, nvd_data, kev_set, epss_scores
-        )
+        try:
+            batch_ranked = rank_cves(
+                chunk, stack_context, provider, nvd_data, kev_set, epss_scores
+            )
+        except ParseError:
+            # Retry by bisecting the chunk — with temperature=0, re-sending the
+            # same prompt produces identical broken output. Smaller batches give
+            # the model less to format and avoid the parse failure.
+            if len(chunk) > 1:
+                mid = len(chunk) // 2
+                batch_ranked = []
+                for sub in (chunk[:mid], chunk[mid:]):
+                    batch_ranked.extend(
+                        rank_cves(
+                            sub,
+                            stack_context,
+                            provider,
+                            nvd_data,
+                            kev_set,
+                            epss_scores,
+                        )
+                    )
+            else:
+                batch_ranked = rank_cves(
+                    chunk, stack_context, provider, nvd_data, kev_set, epss_scores
+                )
         merged.extend(batch_ranked)
 
     # Stable sort: CRITICAL first; within the same tier, preserve batch order.
