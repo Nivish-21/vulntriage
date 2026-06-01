@@ -4,6 +4,16 @@ Rank `pip-audit` CVEs by real exploitability using an LLM.
 
 `pip-audit` reports every vulnerability your dependencies carry — but a CVSS 9.8 in a transitive dependency you never call is not the same risk as a CVSS 5.0 in your HTTP client that handles every request. `vulntriage` feeds your CVE list, your actual dependency stack, and authoritative threat intelligence (NVD CVSS, CISA KEV, EPSS) to an LLM, which ranks them by **real reachability** rather than raw severity score.
 
+> ### 💸 No API key? Use the AI subscription you already pay for.
+>
+> If you have **Claude Code**, **OpenAI Codex**, or the **Gemini CLI** installed and logged in, vulntriage can drive it directly — no API key, no metered billing, no extra cost. You get the **same cloud-grade ranking** as the paid API, billed against your existing subscription:
+>
+> ```bash
+> vulntriage scan --provider claude-cli   # or: codex-cli / gemini-cli
+> ```
+>
+> Nothing to configure — vulntriage runs the CLI for you. [Setup details below.](#no-api-key-use-your-coding-cli-subscription)
+
 ---
 
 ## Requirements
@@ -25,6 +35,10 @@ pip install vulntriage
 ## Usage
 
 ```bash
+# Option A — no API key: use a coding CLI you're already logged into
+vulntriage scan --provider claude-cli      # or codex-cli / gemini-cli
+
+# Option B — API key
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Scan the current directory (needs requirements.txt or pyproject.toml)
