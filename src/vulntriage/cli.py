@@ -135,7 +135,15 @@ def _root() -> None:
 
 
 _VALID_PROVIDERS: frozenset[str] = frozenset(
-    {"anthropic", "openai", "gemini", "ollama"}
+    {
+        "anthropic",
+        "openai",
+        "gemini",
+        "ollama",
+        "claude-cli",
+        "codex-cli",
+        "gemini-cli",
+    }
 )
 
 
@@ -201,7 +209,11 @@ def scan(
     provider_flag: str | None = typer.Option(
         None,
         "--provider",
-        help="LLM provider: anthropic (default), openai, gemini, ollama.",
+        help=(
+            "LLM provider. API-key providers: anthropic (default), openai, gemini. "
+            "Local: ollama. Subscription CLIs (no API key — uses your logged-in "
+            "coding CLI): claude-cli, codex-cli, gemini-cli."
+        ),
     ),
     model_flag: str = typer.Option(
         "",
@@ -273,7 +285,7 @@ def scan(
 
     try:
         provider = get_provider(name=resolved_provider, model=resolved_model)
-    except (AuthError, ValueError) as exc:
+    except (AuthError, AuditError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
@@ -409,7 +421,7 @@ def scan(
                 else None
             ),
         )
-    except AuthError as exc:
+    except (AuthError, AuditError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
     except ParseError as exc:

@@ -10,7 +10,7 @@ Rank `pip-audit` CVEs by real exploitability using an LLM.
 
 - Python 3.11+
 - `pip-audit` installed and on `PATH` (`pip install pip-audit`)
-- An Anthropic API key — or credentials for OpenAI, Gemini, or a local Ollama instance
+- An LLM backend — any one of: an Anthropic/OpenAI/Gemini API key; a logged-in coding CLI (`claude`, `codex`, or `gemini`) on your existing subscription, no API key needed; or a local Ollama instance
 
 ---
 
@@ -51,7 +51,7 @@ vulntriage scan --format json
 | Flag | Default | Description |
 |---|---|---|
 | `--project-root / -p` | `.` | Directory containing `requirements.txt` or `pyproject.toml` |
-| `--provider` | `anthropic` | LLM backend: `anthropic / openai / gemini / ollama` |
+| `--provider` | `anthropic` | LLM backend. API key: `anthropic / openai / gemini`. Subscription CLI (no key): `claude-cli / codex-cli / gemini-cli`. Local: `ollama` |
 | `--model` | provider default | Model name to use (e.g. `phi4-mini`, `gpt-4o-mini`) |
 | `--fail-on` | `none` | Exit 1 if any CVE at or above this severity: `CRITICAL / HIGH / MEDIUM / LOW / INFO / none` |
 | `--format / -f` | `table` | Output format: `table` (Rich), `json`, or `sarif` |
@@ -136,28 +136,71 @@ Lines starting with `#` are comments. Text after the CVE ID is treated as a reas
 
 ## Provider Selection
 
-`vulntriage` supports four LLM backends. Use `--provider` to switch:
+`vulntriage` supports three kinds of LLM backend. Use `--provider` to switch.
+
+**API-key providers** — metered pay-per-token billing:
 
 | Provider | API key env var | Install extra | Default model |
 |---|---|---|---|
 | `anthropic` (default) | `ANTHROPIC_API_KEY` | — | `claude-sonnet-4-6` |
 | `openai` | `OPENAI_API_KEY` | `pip install 'vulntriage[openai]'` | `gpt-4o-mini` |
 | `gemini` | `GOOGLE_API_KEY` | `pip install 'vulntriage[gemini]'` | `gemini-2.0-flash` |
-| `ollama` | — | `pip install 'vulntriage[ollama]'` | `llama3.2` |
+
+**Subscription-CLI providers** — no API key; uses an AI coding CLI you are already logged into (see below):
+
+| Provider | Requires | Cost |
+|---|---|---|
+| `claude-cli` | `claude` (Claude Code) installed + logged in | your Claude subscription |
+| `codex-cli` | `codex` (OpenAI Codex CLI) installed + logged in | your ChatGPT/Codex subscription |
+| `gemini-cli` | `gemini` (Google Gemini CLI) installed + logged in | your Gemini subscription |
+
+**Local provider** — fully offline, no data leaves your machine:
+
+| Provider | Install extra | Default model |
+|---|---|---|
+| `ollama` | `pip install 'vulntriage[ollama]'` | `llama3.2` |
 
 ```bash
-# Use Gemini (free tier at aistudio.google.com/apikey)
+# Use Gemini API (free tier at aistudio.google.com/apikey)
 export GOOGLE_API_KEY="AIza..."
 vulntriage scan --provider gemini
 
 # Use Ollama — fully local, no dependency data leaves your machine
-vulntriage scan --provider ollama
-
-# Use a specific model
 vulntriage scan --provider ollama --model phi4-mini
 ```
 
-**Privacy note:** All providers except Ollama send your dependency names to an external API. If your dependency list is sensitive, use `--provider ollama`.
+### No API key? Use your coding-CLI subscription
+
+If you pay for Claude Code, OpenAI Codex, or the Gemini CLI but have no separate
+API key, `vulntriage` can borrow the subscription you are already logged into.
+There is **nothing to configure in vulntriage** — it spawns the CLI as a
+subprocess (exactly like it spawns `pip-audit`) and reads back the ranking. The
+credentials live in the CLI's own config; `vulntriage` never sees a key.
+
+One-time setup — install and log into whichever CLI you have:
+
+```bash
+# Claude Code
+npm i -g @anthropic-ai/claude-code   # then run `claude` once to log in
+vulntriage scan --provider claude-cli
+
+# OpenAI Codex
+npm i -g @openai/codex && codex login
+vulntriage scan --provider codex-cli
+
+# Google Gemini CLI
+npm i -g @google/gemini-cli          # then run `gemini` once to log in
+vulntriage scan --provider gemini-cli
+```
+
+Notes:
+- Each CLI runs **read-only** with tool use disabled — it only ranks the CVE list.
+- First run is slower than a raw API call (agentic CLIs have heavier startup); the per-provider timeout defaults to 180s and is overridable via `VULNTRIAGE_CLAUDE_CLI_TIMEOUT` / `VULNTRIAGE_CODEX_CLI_TIMEOUT` / `VULNTRIAGE_GEMINI_CLI_TIMEOUT`.
+- Output quality matches the underlying model (Sonnet/GPT/Gemini), so this is a far better free option than local Ollama models for reachability judgements.
+- Bound to your local login — best for local/dev use, not shared CI runners (use the API-key providers for unattended CI).
+- If the CLI is missing or not logged in, `vulntriage` fails with a clear message; it never hangs or silently degrades.
+
+**Privacy note:** Every provider except `ollama` sends your dependency names off the machine — the API providers to their REST API, the subscription-CLI providers via the coding CLI's own session. If your dependency list is sensitive, use `--provider ollama`.
 
 ### Ollama quickstart
 

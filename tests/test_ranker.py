@@ -9,7 +9,11 @@ import pytest
 from vulntriage.exceptions import AuditError, AuthError, ParseError
 from vulntriage.models import CVE
 from vulntriage.ranker import (
+    SYSTEM_PROMPT,
     AnthropicProvider,
+    ClaudeCliProvider,
+    CodexCliProvider,
+    GeminiCliProvider,
     GeminiProvider,
     OllamaProvider,
     OpenAIProvider,
@@ -1114,3 +1118,126 @@ def test_system_prompt_references_file_line_call_sites() -> None:
 
     assert "file:line" in SYSTEM_PROMPT
     assert "call sites" in SYSTEM_PROMPT.lower()
+
+
+# ---------------------------------------------------------------------------
+# Subprocess CLI providers (claude-cli / codex-cli / gemini-cli)
+# ---------------------------------------------------------------------------
+
+
+def _ok_run(stdout: str = "[]") -> MagicMock:
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = stdout
+    result.stderr = ""
+    return result
+
+
+def test_claude_cli_success() -> None:
+    with (
+        patch("vulntriage.ranker.shutil.which", return_value="/usr/bin/claude"),
+        patch(
+            "vulntriage.ranker.subprocess.run", return_value=_ok_run("RANKED")
+        ) as run,
+    ):
+        provider = ClaudeCliProvider()
+        assert provider.complete("system", "user") == "RANKED"
+        argv = run.call_args.args[0]
+        assert argv[0] == "claude"
+        assert "-p" in argv
+        assert "--append-system-prompt" in argv
+        assert "--disallowed-tools" in argv
+        # user prompt goes on stdin
+        assert run.call_args.kwargs["input"] == "user"
+
+
+def test_codex_cli_success(tmp_path) -> None:
+    msg_file = tmp_path / "out.txt"
+    msg_file.write_text("RANKED", encoding="utf-8")
+    with (
+        patch("vulntriage.ranker.shutil.which", return_value="/usr/bin/codex"),
+        patch(
+            "vulntriage.ranker.tempfile.mkstemp",
+            return_value=(os.open(msg_file, os.O_RDONLY), str(msg_file)),
+        ),
+        patch("vulntriage.ranker.subprocess.run", return_value=_ok_run()) as run,
+        patch("vulntriage.ranker.os.unlink"),
+    ):
+        provider = CodexCliProvider()
+        assert provider.complete("system", "user") == "RANKED"
+        argv = run.call_args.args[0]
+        assert argv[:2] == ["codex", "exec"]
+        assert "--sandbox" in argv and "read-only" in argv
+        assert "-o" in argv
+        # system + user folded into the stdin prompt
+        assert "system" in run.call_args.kwargs["input"]
+        assert "user" in run.call_args.kwargs["input"]
+
+
+def test_gemini_cli_success() -> None:
+    with (
+        patch("vulntriage.ranker.shutil.which", return_value="/usr/bin/gemini"),
+        patch(
+            "vulntriage.ranker.subprocess.run", return_value=_ok_run("RANKED")
+        ) as run,
+    ):
+        provider = GeminiCliProvider()
+        assert provider.complete("system", "user") == "RANKED"
+        argv = run.call_args.args[0]
+        assert argv[0] == "gemini"
+        assert "--approval-mode" in argv and "plan" in argv
+        assert "-p" in argv
+
+
+def test_cli_provider_binary_missing() -> None:
+    with patch("vulntriage.ranker.shutil.which", return_value=None):
+        for cls, hint in (
+            (ClaudeCliProvider, "claude"),
+            (CodexCliProvider, "codex"),
+            (GeminiCliProvider, "gemini"),
+        ):
+            with pytest.raises(AuditError, match=hint):
+                cls()
+
+
+def test_cli_provider_nonzero_exit() -> None:
+    failed = MagicMock()
+    failed.returncode = 1
+    failed.stdout = ""
+    failed.stderr = "not logged in"
+    with (
+        patch("vulntriage.ranker.shutil.which", return_value="/usr/bin/claude"),
+        patch("vulntriage.ranker.subprocess.run", return_value=failed),
+    ):
+        provider = ClaudeCliProvider()
+        with pytest.raises(AuditError, match="not logged in"):
+            provider.complete("system", "user")
+
+
+def test_cli_provider_empty_output() -> None:
+    with (
+        patch("vulntriage.ranker.shutil.which", return_value="/usr/bin/gemini"),
+        patch("vulntriage.ranker.subprocess.run", return_value=_ok_run("   ")),
+    ):
+        provider = GeminiCliProvider()
+        with pytest.raises(ParseError, match="empty"):
+            provider.complete("system", "user")
+
+
+def test_get_provider_registers_cli_providers() -> None:
+    with patch("vulntriage.ranker.shutil.which", return_value="/usr/bin/x"):
+        assert isinstance(get_provider("claude-cli"), ClaudeCliProvider)
+        assert isinstance(get_provider("codex-cli"), CodexCliProvider)
+        assert isinstance(get_provider("gemini-cli"), GeminiCliProvider)
+
+
+def test_cli_provider_uses_full_system_prompt() -> None:
+    # claude-cli passes the full SYSTEM_PROMPT via --append-system-prompt.
+    with (
+        patch("vulntriage.ranker.shutil.which", return_value="/usr/bin/claude"),
+        patch("vulntriage.ranker.subprocess.run", return_value=_ok_run("[]")) as run,
+    ):
+        ClaudeCliProvider().complete(SYSTEM_PROMPT, "user")
+        argv = run.call_args.args[0]
+        idx = argv.index("--append-system-prompt")
+        assert argv[idx + 1] == SYSTEM_PROMPT

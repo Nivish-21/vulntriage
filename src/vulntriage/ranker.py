@@ -2,8 +2,10 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -322,11 +324,187 @@ class OllamaProvider:
         return content
 
 
+# --- Subprocess CLI providers (subscription-backed, no API key) ---------------
+# These shell out to an installed agentic coding CLI in a constrained, read-only,
+# single-shot mode. Auth lives in the CLI's own config (~/.claude, ~/.codex,
+# ~/.gemini) — vulntriage never sees a key. The CLI's text answer flows into the
+# existing parse_claude_response(). These are capable cloud models, so they use
+# the full SYSTEM_PROMPT, not OLLAMA_SYSTEM_PROMPT.
+
+# Agentic CLIs have heavier startup than a raw API call; allow more headroom.
+CLI_PROVIDER_TIMEOUT_DEFAULT = 180
+CLAUDE_CLI_TIMEOUT = int(
+    os.environ.get("VULNTRIAGE_CLAUDE_CLI_TIMEOUT", str(CLI_PROVIDER_TIMEOUT_DEFAULT))
+)
+CODEX_CLI_TIMEOUT = int(
+    os.environ.get("VULNTRIAGE_CODEX_CLI_TIMEOUT", str(CLI_PROVIDER_TIMEOUT_DEFAULT))
+)
+GEMINI_CLI_TIMEOUT = int(
+    os.environ.get("VULNTRIAGE_GEMINI_CLI_TIMEOUT", str(CLI_PROVIDER_TIMEOUT_DEFAULT))
+)
+
+# Tools denied to the Claude CLI during a ranking call. The prompt is fully
+# self-contained, so the model never needs to touch the filesystem or network.
+_CLAUDE_DENIED_TOOLS = [
+    "Bash",
+    "Edit",
+    "Write",
+    "Read",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+    "Task",
+    "NotebookEdit",
+]
+
+
+def _require_binary(binary: str, install_hint: str) -> None:
+    """Raise AuditError if a required CLI is not on PATH.
+
+    AuditError (not AuthError) because a missing prerequisite mirrors how the
+    Ollama provider treats a missing daemon; cli.py surfaces it cleanly.
+    """
+    if shutil.which(binary) is None:
+        raise AuditError(install_hint)
+
+
+def _run_cli(
+    argv: list[str],
+    stdin_text: str,
+    timeout: int,
+    binary: str,
+) -> str:
+    """Run an agentic coding CLI non-interactively and return its stdout.
+
+    Maps process-level failures to AuditError, which cli.py surfaces without a
+    traceback. The most common failure is "not logged in", so the hints point
+    there; the captured stderr carries the real cause for anything else.
+    """
+    try:
+        result = subprocess.run(
+            argv,
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise AuditError(f"'{binary}' is not installed or not on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise AuditError(
+            f"'{binary}' did not respond within {timeout}s. It may be waiting for "
+            f"interactive login — run '{binary}' once manually to authenticate, or "
+            "raise the timeout via its VULNTRIAGE_*_CLI_TIMEOUT env var."
+        ) from exc
+    if result.returncode != 0:
+        stderr_tail = (result.stderr or "").strip()[-500:]
+        raise AuditError(
+            f"'{binary}' exited with code {result.returncode}. Most likely it is not "
+            f"logged in — run '{binary}' to authenticate. stderr: {stderr_tail}"
+        )
+    return result.stdout
+
+
+class ClaudeCliProvider:
+    """Drives the Claude Code CLI (`claude -p`) on the user's subscription."""
+
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model
+        self.name = f"claude-cli ({model})" if model else "claude-cli"
+        _require_binary(
+            "claude",
+            "The 'claude' CLI is not installed or not on PATH. Install Claude Code "
+            "(https://docs.claude.com/en/docs/claude-code) and run 'claude' once to "
+            "log in, then retry with --provider claude-cli.",
+        )
+
+    def complete(self, system: str, user: str) -> str:
+        argv = ["claude", "-p", "--append-system-prompt", system]
+        if self._model:
+            argv += ["--model", self._model]
+        # Variadic flag last so it consumes the tool names cleanly; the user
+        # prompt is supplied on stdin.
+        argv += ["--disallowed-tools", *_CLAUDE_DENIED_TOOLS]
+        out = _run_cli(argv, user, CLAUDE_CLI_TIMEOUT, "claude")
+        if not out.strip():
+            raise ParseError("claude CLI returned an empty response.")
+        return out
+
+
+class CodexCliProvider:
+    """Drives the OpenAI Codex CLI (`codex exec`) on the user's subscription."""
+
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model
+        self.name = f"codex-cli ({model})" if model else "codex-cli"
+        _require_binary(
+            "codex",
+            "The 'codex' CLI is not installed or not on PATH. Install it "
+            "(npm i -g @openai/codex) and run 'codex login', then retry with "
+            "--provider codex-cli.",
+        )
+
+    def complete(self, system: str, user: str) -> str:
+        # codex exec has no system-prompt flag; fold system into the prompt.
+        prompt = f"{system}\n\n{user}"
+        # --output-last-message writes only the final agent message to a file,
+        # sidestepping codex's event-stream stdout entirely.
+        out_fd, out_path = tempfile.mkstemp(suffix=".txt", prefix="vulntriage_codex_")
+        os.close(out_fd)
+        try:
+            argv = ["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check"]
+            if self._model:
+                argv += ["-m", self._model]
+            # "-" reads the prompt from stdin.
+            argv += ["-o", out_path, "-"]
+            _run_cli(argv, prompt, CODEX_CLI_TIMEOUT, "codex")
+            with open(out_path, encoding="utf-8") as fh:
+                content = fh.read()
+        finally:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+        if not content.strip():
+            raise ParseError("codex CLI returned an empty response.")
+        return content
+
+
+class GeminiCliProvider:
+    """Drives the Google Gemini CLI (`gemini -p`) on the user's subscription."""
+
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model
+        self.name = f"gemini-cli ({model})" if model else "gemini-cli"
+        _require_binary(
+            "gemini",
+            "The 'gemini' CLI is not installed or not on PATH. Install it "
+            "(npm i -g @google/gemini-cli) and run 'gemini' once to log in, then "
+            "retry with --provider gemini-cli.",
+        )
+
+    def complete(self, system: str, user: str) -> str:
+        # Gemini CLI has no system-prompt flag; fold system into the prompt.
+        # --approval-mode plan is read-only: no tool execution.
+        prompt = f"{system}\n\n{user}"
+        argv = ["gemini", "--approval-mode", "plan", "-p", prompt]
+        if self._model:
+            argv += ["-m", self._model]
+        out = _run_cli(argv, "", GEMINI_CLI_TIMEOUT, "gemini")
+        if not out.strip():
+            raise ParseError("gemini CLI returned an empty response.")
+        return out
+
+
 _PROVIDERS: dict[str, type] = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
     "ollama": OllamaProvider,
+    "claude-cli": ClaudeCliProvider,
+    "codex-cli": CodexCliProvider,
+    "gemini-cli": GeminiCliProvider,
 }
 
 
