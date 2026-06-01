@@ -62,14 +62,86 @@ def test_render_table_empty_prints_no_vulns(capsys: object) -> None:
         assert "No vulnerabilities" in call_arg
 
 
-def test_render_table_prints_table_for_ranked(capsys: object) -> None:
-    with patch("vulntriage.output.console") as mock_console:
-        render_table([_make_ranked("HIGH")])
-        assert mock_console.print.call_count >= 1
-        first_call_arg = mock_console.print.call_args_list[0][0][0]
-        from rich.table import Table
+def _render_to_text(ranked: list[RankedCVE]) -> str:
+    """Render cards to a fixed-width capturing Console and return plain text."""
+    from rich.console import Console
 
-        assert isinstance(first_call_arg, Table)
+    buf = Console(width=100, record=True, force_terminal=False)
+    with patch("vulntriage.output.console", buf):
+        render_table(ranked)
+    return buf.export_text()
+
+
+def test_render_table_shows_what_why_fix_breaking() -> None:
+    cve = CVE(
+        id="CVE-2023-32681",
+        package="requests",
+        installed_version="2.28.0",
+        fix_versions=["2.31.0"],
+        aliases=[],
+        description="Test vuln",
+    )
+    ranked = RankedCVE(
+        rank=1,
+        cve=cve,
+        real_risk="HIGH",
+        reasoning="Direct dependency on every request path.",
+        fix_command="pip install requests==2.31.0",
+        breaking_changes="Proxy header handling changes in 2.31.",
+    )
+    out = _render_to_text([ranked])
+    # The four things a beginner needs are all present and labelled.
+    assert "CVE-2023-32681" in out
+    assert "HIGH" in out
+    assert "Why" in out and "every request path" in out
+    assert "Fix" in out and "pip install requests==2.31.0" in out
+    assert "Breaking" in out and "Proxy header handling" in out
+    # Version delta is spelled out.
+    assert "2.28.0" in out and "2.31.0" in out
+
+
+def test_render_table_synthesises_fix_command_when_missing() -> None:
+    cve = CVE(
+        id="CVE-1",
+        package="pyjwt",
+        installed_version="1.7.1",
+        fix_versions=["2.4.0"],
+        aliases=[],
+        description="x",
+    )
+    ranked = RankedCVE(rank=1, cve=cve, real_risk="HIGH", reasoning="", fix_command="")
+    out = _render_to_text([ranked])
+    assert "pip install" in out and "pyjwt" in out and "2.4.0" in out
+
+
+def test_render_table_no_fix_when_no_versions() -> None:
+    cve = CVE(
+        id="CVE-2",
+        package="pkg",
+        installed_version="1.0.0",
+        fix_versions=[],
+        aliases=[],
+        description="x",
+    )
+    ranked = RankedCVE(rank=1, cve=cve, real_risk="LOW", reasoning="", fix_command="")
+    out = _render_to_text([ranked])
+    assert "No fix released yet" in out
+
+
+def test_render_table_shows_kev_badge() -> None:
+    cve = CVE(
+        id="CVE-3",
+        package="pkg",
+        installed_version="1.0.0",
+        fix_versions=["2.0.0"],
+        aliases=[],
+        description="x",
+    )
+    ranked = RankedCVE(
+        rank=1, cve=cve, real_risk="HIGH", reasoning="", fix_command="", kev=True
+    )
+    out = _render_to_text([ranked])
+    assert "CISA KEV" in out
 
 
 # --- fail_on threshold tests ---

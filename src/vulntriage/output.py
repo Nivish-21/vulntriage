@@ -3,9 +3,9 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rich import box
 from rich.console import Console
 from rich.markup import escape
+from rich.rule import Rule
 from rich.table import Table
 
 from vulntriage.models import RankedCVE, min_fix_version
@@ -30,53 +30,85 @@ SEVERITY: dict[str, int] = {
 console = Console()
 
 
+def _fix_line(r: RankedCVE) -> str:
+    """One line telling the user the exact upgrade and the version delta.
+
+    Prefers the LLM's fix_command; falls back to a synthesised pip command so the
+    user always has something copy-pasteable. Escaped because package specs can
+    contain '[extras]', which Rich would otherwise read as markup.
+    """
+    mfv = min_fix_version(r.cve.fix_versions)
+    if not mfv:
+        return "[dim]No fix released yet — monitor the advisory.[/dim]"
+    raw = r.fix_command.strip() or f'pip install "{r.cve.package}>={mfv}"'
+    cmd = escape(raw)
+    delta = (
+        f"[dim](you have {escape(r.cve.installed_version)} "
+        f"→ need ≥ {escape(mfv)})[/dim]"
+    )
+    return f"[green]{cmd}[/green]   {delta}"
+
+
+def _severity_line(r: RankedCVE) -> str:
+    """Compact severity facts; omitted entirely when nothing is known."""
+    parts: list[str] = []
+    if r.cvss:
+        parts.append(f"CVSS {escape(r.cvss)}")
+    if r.epss:
+        parts.append(f"EPSS {escape(r.epss)}")
+    if r.kev:
+        parts.append("[bold yellow]★ exploited in the wild (CISA KEV)[/bold yellow]")
+    return " · ".join(parts)
+
+
+def _is_meaningful_code_change(text: str) -> bool:
+    return bool(text.strip()) and "not directly imported" not in text.lower()
+
+
 def render_table(ranked: list[RankedCVE]) -> None:
     if not ranked:
         console.print("[green]✓ No vulnerabilities found.[/green]")
         return
-    table = Table(
-        box=box.ROUNDED,
-        show_header=True,
-        header_style="bold white",
-        title="[bold]vulntriage — CVE Priority Report[/bold]",
-        title_style="bold cyan",
+
+    n = len(ranked)
+    console.print(
+        f"\n[bold cyan]vulntriage — CVE Priority Report[/bold cyan]   "
+        f"[dim]({n} finding{'s' if n != 1 else ''}, highest priority first)[/dim]\n"
     )
-    table.add_column("#", style="dim", width=3, justify="right")
-    table.add_column("CVE / PYSEC ID", style="bold", min_width=18)
-    table.add_column("Package", min_width=12)
-    table.add_column("Risk", min_width=8)
-    table.add_column("CVSS", style="dim", min_width=5)
-    table.add_column("EPSS", style="dim", min_width=6)
-    table.add_column("Min Fix", style="cyan", min_width=10)
-    table.add_column("Reasoning", min_width=30)
-    table.add_column("Fix", style="green", min_width=25)
-    table.add_column("Breaking Changes", style="yellow", min_width=25)
-    table.add_column("Code Changes", style="dim", min_width=25)
+
     for r in ranked:
         colour = RISK_COLOURS.get(r.real_risk, "white")
-        cve_cell = r.cve.id
-        if r.kev:
-            cve_cell = f"{r.cve.id}\n[bold yellow]★ CISA KEV[/bold yellow]"
-        mfv = min_fix_version(r.cve.fix_versions)
-        min_fix_cell = f">= {mfv}" if mfv else "no fix"
-        table.add_row(
-            str(r.rank),
-            cve_cell,
-            f"{r.cve.package} {r.cve.installed_version}",
-            f"[{colour}]{r.real_risk}[/{colour}]",
-            escape(r.cvss) if r.cvss else "—",
-            escape(r.epss) if r.epss else "—",
-            min_fix_cell,
-            escape(r.reasoning),
-            escape(r.fix_command),
-            escape(r.breaking_changes),
-            escape(r.code_changes),
+        kev_badge = "  [bold yellow]★ CISA KEV[/bold yellow]" if r.kev else ""
+        header = (
+            f"[{colour}]#{r.rank}  {escape(r.real_risk)}[/{colour}]  "
+            f"[bold]{escape(r.cve.package)} {escape(r.cve.installed_version)}[/bold]"
+            f"{kev_badge}"
         )
-    console.print(table)
+        console.print(Rule(header, align="left", style=colour))
+
+        card = Table(box=None, show_header=False, pad_edge=False, padding=(0, 2, 0, 0))
+        card.add_column(style="bold dim", width=9, no_wrap=True)
+        card.add_column(overflow="fold")
+
+        card.add_row("CVE", f"[bold]{escape(r.cve.id)}[/bold]")
+        if r.reasoning.strip():
+            card.add_row("Why", escape(r.reasoning))
+        card.add_row("Fix", _fix_line(r))
+        if r.breaking_changes.strip():
+            card.add_row("Breaking", f"[yellow]{escape(r.breaking_changes)}[/yellow]")
+        if _is_meaningful_code_change(r.code_changes):
+            card.add_row("Code", f"[dim]{escape(r.code_changes)}[/dim]")
+        severity = _severity_line(r)
+        if severity:
+            card.add_row("Severity", severity)
+
+        console.print(card)
+        console.print()
+
     if any(not r.cvss for r in ranked):
         console.print(
-            "[dim]Note: CVSS scores marked '—' are unavailable. "
-            "Run without --offline to fetch authoritative scores from NVD.[/dim]"
+            "[dim]Note: CVSS/EPSS shown only where available — "
+            "run without --offline to fetch authoritative scores from NVD.[/dim]"
         )
 
 

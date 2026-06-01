@@ -65,21 +65,29 @@ vulntriage scan --format json
 
 ### Output
 
+Findings are printed as priority-ordered cards — each tells you what to fix, why it matters, the exact version to upgrade to, and what might break:
+
 ```
-╭─────────────────────────────────────────────────────────────╮
-│             vulntriage — CVE Priority Report                 │
-├───┬──────────────────────┬──────────────────┬──────┬──────┬───────┬───────────────────────────────────┬──────────────────────────────┬──────────────────────────────────╮
-│ # │ CVE / PYSEC ID       │ Package          │ Risk │ CVSS │ EPSS  │ Reasoning                         │ Breaking Changes              │ Fix                              │
-├───┼──────────────────────┼──────────────────┼──────┼──────┼───────┼───────────────────────────────────┼──────────────────────────────┼──────────────────────────────────┤
-│ 1 │ CVE-2024-35195       │ requests 2.31.0  │ HIGH │ 9.1  │ 12.3% │ SSRF via proxied requests; direct │ verify=True is now the        │ pip install requests>=2.32.0     │
-│   │ ★ CISA KEV           │ → 2.32.0         │      │      │       │ dep called at every API boundary  │ default—audit any verify=False │                                  │
-├───┼──────────────────────┼──────────────────┼──────┼──────┼───────┼───────────────────────────────────┼──────────────────────────────┼──────────────────────────────────┤
-│ 2 │ CVE-2022-40897       │ setuptools 65.5.0│ LOW  │ 7.5  │  0.1% │ ReDoS in package metadata parser; │ No breaking changes in patch  │ pip install setuptools>=65.5.1   │
-│   │                      │ → 65.5.1         │      │      │       │ not reachable at app runtime      │ release                       │                                  │
-╰───┴──────────────────────┴──────────────────┴──────┴──────┴───────┴───────────────────────────────────┴──────────────────────────────┴──────────────────────────────────╯
+vulntriage — CVE Priority Report   (2 findings, highest priority first)
+
+#1  HIGH  requests 2.31.0  ★ CISA KEV ───────────────────────────────────
+CVE        CVE-2024-35195
+Why        Attack: SSRF via proxied requests. Path: app.py:52 requests.get()
+           on the request boundary. Verdict: REACHABLE — called every request.
+Fix        pip install "requests>=2.32.0"   (you have 2.31.0 → need ≥ 2.32.0)
+Breaking   verify=True is now the default — audit any verify=False call sites.
+Code       app.py:52 requests.get(verify=, timeout=)
+Severity   CVSS 9.1 · EPSS 12.3% · ★ exploited in the wild (CISA KEV)
+
+#2  LOW  jinja2 3.1.0 ───────────────────────────────────────────────────
+CVE        CVE-2024-22195
+Why        Attack: XSS via xmlattr filter. Path: no call site listed —
+           filter not used in source. Verdict: UNLIKELY.
+Fix        pip install "jinja2>=3.1.3"   (you have 3.1.0 → need ≥ 3.1.3)
+Breaking   Safe, backwards-compatible patch release.
 ```
 
-`★ CISA KEV` — CISA has confirmed this CVE is actively exploited in the wild.
+`★ CISA KEV` — CISA has confirmed this CVE is actively exploited in the wild. `Code` and `Severity` lines appear only when there is something to show. For machine-readable output use `--format json` or `--format sarif`.
 
 ---
 
