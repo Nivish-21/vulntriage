@@ -1,18 +1,20 @@
 # vulntriage
 
-Rank `pip-audit` CVEs by real exploitability using an LLM.
+**Zero-config, zero-cost CVE triage for Python.** Turn a wall of `pip-audit` output into a short, ranked, plain-English fix list — using the AI CLI you already pay for.
 
-`pip-audit` reports every vulnerability your dependencies carry — but a CVSS 9.8 in a transitive dependency you never call is not the same risk as a CVSS 5.0 in your HTTP client that handles every request. `vulntriage` feeds your CVE list, your actual dependency stack, and authoritative threat intelligence (NVD CVSS, CISA KEV, EPSS) to an LLM, which ranks them by **real reachability** rather than raw severity score.
+`pip-audit` (and OSV-Scanner, Grype, …) report *every* known vulnerability in your dependencies — often dozens — flat, by raw severity, with no sense of which ones actually matter to *your* project. A CVSS 9.8 in a transitive package you never call is not the emergency a CVSS 5.0 in your HTTP client is. `vulntriage` takes that raw list, enriches it with authoritative threat intelligence (NVD CVSS, CISA KEV, EPSS), sends it to an LLM, and hands back a priority-ordered report: what to fix first, the exact version to upgrade to, and what might break. One command, no config, no API bill.
+
+It's a fast **first-pass triage** for the solo developer staring at a pip-audit dump — not a heavyweight, compliance-grade call-graph scanner. See [How vulntriage compares](#how-vulntriage-compares).
 
 > ### 💸 No API key? Use the AI subscription you already pay for.
 >
-> If you have **Claude Code**, **OpenAI Codex**, or the **Gemini CLI** installed and logged in, vulntriage can drive it directly — no API key, no metered billing, no extra cost. You get the **same cloud-grade ranking** as the paid API, billed against your existing subscription:
+> If you have **Claude Code**, **OpenAI Codex**, or the **Gemini CLI** installed and logged in, vulntriage drives it as the LLM backend — no API key, no metered billing, no extra cost. (It uses the same subscription-CLI-as-backend approach as tools like CLIProxyAPI, applied to triage: it spawns the CLI as a subprocess, exactly like it spawns `pip-audit`, and reads back the ranking. You get the same model you'd pay per-token for, billed instead against your existing subscription.)
 >
 > ```bash
 > vulntriage scan --provider claude-cli   # or: codex-cli / gemini-cli
 > ```
 >
-> Nothing to configure — vulntriage runs the CLI for you. [Setup details below.](#no-api-key-use-your-coding-cli-subscription)
+> Nothing to configure. [Setup details below.](#no-api-key-use-your-coding-cli-subscription)
 
 ---
 
@@ -86,8 +88,8 @@ vulntriage — CVE Priority Report   (2 findings, highest priority first)
 
 #1  HIGH  requests 2.31.0  ★ CISA KEV ───────────────────────────────────
 CVE        CVE-2024-35195
-Why        Attack: SSRF via proxied requests. Path: app.py:52 requests.get()
-           on the request boundary. Verdict: REACHABLE — called every request.
+Why        Attack: SSRF via proxied requests. Used at app.py:52 on the request
+           boundary. LLM view: likely reachable — treat as urgent.
 Fix        pip install "requests>=2.32.0"   (you have 2.31.0 → need ≥ 2.32.0)
 Breaking   verify=True is now the default — audit any verify=False call sites.
 Code       app.py:52 requests.get(verify=, timeout=)
@@ -95,13 +97,24 @@ Severity   CVSS 9.1 · EPSS 12.3% · ★ exploited in the wild (CISA KEV)
 
 #2  LOW  jinja2 3.1.0 ───────────────────────────────────────────────────
 CVE        CVE-2024-22195
-Why        Attack: XSS via xmlattr filter. Path: no call site listed —
-           filter not used in source. Verdict: UNLIKELY.
+Why        Attack: XSS via xmlattr filter. No call site found in your source.
+           LLM view: likely not reachable.
 Fix        pip install "jinja2>=3.1.3"   (you have 3.1.0 → need ≥ 3.1.3)
 Breaking   Safe, backwards-compatible patch release.
 ```
 
-`★ CISA KEV` — CISA has confirmed this CVE is actively exploited in the wild. `Code` and `Severity` lines appear only when there is something to show. For machine-readable output use `--format json` or `--format sarif`.
+`★ CISA KEV` — CISA has confirmed this CVE is actively exploited in the wild. The `LLM view` is a heuristic judgement of likely reachability from your stack — a triage signal to tell you where to look first, **not** a proven call path (see [How vulntriage compares](#how-vulntriage-compares)). `Code` and `Severity` lines appear only when there is something to show. For machine-readable output use `--format json` or `--format sarif`.
+
+---
+
+## How vulntriage compares
+
+vulntriage deliberately occupies one spot: the **zero-config, zero-cost first pass**. It is not trying to be an enterprise scanner, and it's honest about the boundary.
+
+- **vs `pip-audit` / `OSV-Scanner` / `Grype`** — those *find* vulnerabilities but list them flat, by raw severity. vulntriage runs on top of pip-audit and adds prioritisation, threat-intel context (KEV/EPSS/CVSS), fix versions, and plain-English reasoning.
+- **vs Snyk / Semgrep / Endor Labs / OWASP dep-scan** — those build a real **call graph** to prove which vulnerable *functions* your code actually reaches. That's the right tool when you need an auditable, compliance-grade verdict. vulntriage does **not** build a call graph; its reachability is the LLM's best-effort heuristic from your dependency list and stack context. It trades that rigour for being free, instant, and zero-setup.
+
+Rule of thumb: if you need *provable* reachability for an audit, reach for a call-graph SCA tool. If you need to know *which three of forty* pip-audit findings to deal with this afternoon — that's vulntriage.
 
 ---
 
@@ -304,9 +317,10 @@ Each scan makes one LLM API call. At `claude-sonnet-4-6` pricing (~$3/M input, $
 
 ## Scope
 
-- pip only (no npm, cargo, etc.)
-- Context from `requirements.txt` / `pyproject.toml` — no static call-graph analysis
-- Threat intel cached at `~/.cache/vulntriage/` with a 24-hour TTL
+- **pip only** (no npm, cargo, etc.).
+- **No static call-graph analysis — by design.** Reachability is the LLM's heuristic judgement from your dependency list and stack, not a proven call path (see [How vulntriage compares](#how-vulntriage-compares)). That trade-off is what keeps vulntriage zero-config and instant.
+- Context from `requirements.txt` / `pyproject.toml`.
+- Threat intel cached at `~/.cache/vulntriage/` with a 24-hour TTL.
 
 ---
 

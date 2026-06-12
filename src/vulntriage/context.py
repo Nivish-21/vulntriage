@@ -5,6 +5,8 @@ from typing import Any
 from vulntriage.exceptions import ContextError
 from vulntriage.importscan import scan_project
 
+_LOCK_FILE_PRIORITY: tuple[str, ...] = ("uv.lock", "poetry.lock", "pdm.lock")
+
 _WEB_FRAMEWORKS = frozenset(
     {
         "fastapi",
@@ -39,6 +41,38 @@ _PIP_IMPORT_ALIASES: dict[str, str] = {
     "python-magic": "magic",
     "gitpython": "git",
 }
+
+
+def _read_lock_file(project_root: Path) -> str | None:
+    """Return a formatted resolved-deps section from the first lock file found.
+
+    Priority: uv.lock > poetry.lock > pdm.lock.
+    Returns None when no lock file exists, TOML parsing fails, or no packages found.
+    """
+    for filename in _LOCK_FILE_PRIORITY:
+        lock_path = project_root / filename
+        if not lock_path.exists():
+            continue
+        try:
+            content = lock_path.read_text(encoding="utf-8")
+            data = tomllib.loads(content)
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return None
+        packages = data.get("package", [])
+        if not isinstance(packages, list):
+            return None
+        lines: list[str] = []
+        for pkg in packages:
+            if not isinstance(pkg, dict):
+                continue
+            name = pkg.get("name")
+            version = pkg.get("version")
+            if name and version:
+                lines.append(f"{name}=={version}")
+        if not lines:
+            return None
+        return f"Resolved dependencies (from {filename}):\n" + "\n".join(lines)
+    return None
 
 
 def _detect_project_type(imported: dict[str, set[str]]) -> str:
@@ -165,6 +199,10 @@ def read_stack_context(
             raise ContextError(
                 f"No requirements.txt or pyproject.toml found in {project_root}"
             )
+
+    lock_section = _read_lock_file(project_root)
+    if lock_section:
+        dep_content = f"{dep_content}\n\n{lock_section}"
 
     imported, _ = scan_project(project_root)
     project_type = _detect_project_type(imported)

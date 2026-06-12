@@ -48,11 +48,18 @@ def _resolve_cve_id(cve: CVE) -> str:
 
 
 def _read_dep_content(project_root: Path) -> str:
+    parts: list[str] = []
     for name in ("requirements.txt", "pyproject.toml"):
         p = project_root / name
         if p.exists():
-            return p.read_text(encoding="utf-8")
-    return ""
+            parts.append(p.read_text(encoding="utf-8"))
+            break
+    for filename in ("uv.lock", "poetry.lock", "pdm.lock"):
+        p = project_root / filename
+        if p.exists():
+            parts.append(p.read_text(encoding="utf-8"))
+            break
+    return "".join(parts)
 
 
 def _ranked_to_dict(r: RankedCVE) -> dict[str, Any]:

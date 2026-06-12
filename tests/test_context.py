@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from vulntriage.context import read_stack_context
+from vulntriage.cli import _read_dep_content
+from vulntriage.context import _read_lock_file, read_stack_context
 from vulntriage.exceptions import ContextError
 
 
@@ -237,3 +238,112 @@ def test_unknown_pip_name_still_shows_not_found(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("import requests\n")
     context = read_stack_context(tmp_path, cve_packages=["some-obscure-lib"])
     assert "NOT FOUND IN SOURCE" in context
+
+
+# ---------------------------------------------------------------------------
+# Lock-file support tests (v0.16.0)
+# ---------------------------------------------------------------------------
+
+_UV_LOCK = """\
+version = 1
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "certifi"
+version = "2023.7.22"
+"""
+
+_POETRY_LOCK = """\
+[[package]]
+name = "requests"
+version = "2.28.0"
+description = "Python HTTP for Humans."
+category = "main"
+optional = false
+python-versions = ">=3.7"
+
+[[package]]
+name = "urllib3"
+version = "1.26.18"
+description = "HTTP library with thread-safe connection pooling."
+category = "main"
+optional = false
+python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5.*"
+"""
+
+_PDM_LOCK = """\
+[metadata]
+groups = ["default"]
+strategy = ["cross_platform"]
+
+[[package]]
+name = "requests"
+version = "2.28.0"
+
+[[package]]
+name = "idna"
+version = "3.4"
+"""
+
+
+def test_uv_lock_appended_to_context(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+    (tmp_path / "uv.lock").write_text(_UV_LOCK)
+    context = read_stack_context(tmp_path)
+    assert "Resolved dependencies (from uv.lock):" in context
+    assert "requests==2.31.0" in context
+    assert "certifi==2023.7.22" in context
+
+
+def test_poetry_lock_appended_to_context(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "poetry.lock").write_text(_POETRY_LOCK)
+    context = read_stack_context(tmp_path)
+    assert "Resolved dependencies (from poetry.lock):" in context
+    assert "urllib3==1.26.18" in context
+
+
+def test_pdm_lock_appended_to_context(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "pdm.lock").write_text(_PDM_LOCK)
+    context = read_stack_context(tmp_path)
+    assert "Resolved dependencies (from pdm.lock):" in context
+    assert "idna==3.4" in context
+
+
+def test_lock_file_priority_uv_over_poetry(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "uv.lock").write_text(_UV_LOCK)
+    (tmp_path / "poetry.lock").write_text(_POETRY_LOCK)
+    context = read_stack_context(tmp_path)
+    assert "Resolved dependencies (from uv.lock):" in context
+    assert "Resolved dependencies (from poetry.lock):" not in context
+
+
+def test_no_lock_file_no_resolved_section(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    context = read_stack_context(tmp_path)
+    assert "Resolved dependencies" not in context
+
+
+def test_malformed_lock_file_no_crash(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.28.0\n")
+    (tmp_path / "uv.lock").write_text("this is not valid TOML ][[\n")
+    result = _read_lock_file(tmp_path)
+    assert result is None
+    context = read_stack_context(tmp_path)
+    assert "Resolved dependencies" not in context
+
+
+def test_read_dep_content_includes_lock_file(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+    (tmp_path / "uv.lock").write_text(_UV_LOCK)
+    content = _read_dep_content(tmp_path)
+    # _read_dep_content returns raw file text for cache-key computation; the
+    # lock file appears as raw TOML, not formatted pkg==version lines.
+    assert "requests==2.31.0" in content
+    assert 'name = "certifi"' in content

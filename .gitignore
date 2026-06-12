@@ -35,6 +35,9 @@ CLAUDE.md.bak
 project.md
 docs/
 
+# Personal study/reference file — never push
+vulntriage-technical-qa.html
+
 # Claude Code / ruflo / swarm session artifacts
 .claude/
 .claude.bak/
@@ -51,3 +54,4 @@ ruvector.db
 
 # GBrain
 .gbrain-source
+.gstack/
